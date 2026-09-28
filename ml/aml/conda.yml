@@ -1,0 +1,12 @@
+# Training environment for the Azure ML job.
+# Pins must match requirements/train.txt (enforced by tests/unit/test_aml_env.py).
+name: dfcast-train
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - lightgbm==4.7.0
+      - numpy==2.2.6
+      - pandas==2.3.3

@@ -1,0 +1,16 @@
+# Files not uploaded as the Azure ML job's code snapshot
+.git
+.github
+.claude
+data
+artifacts
+infra
+docs
+tests
+app
+scripts
+loadtest
+chaos
+**/__pycache__
+.venv
+*.md
