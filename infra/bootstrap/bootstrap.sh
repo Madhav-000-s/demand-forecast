@@ -50,7 +50,8 @@ PROJECT_RG_ID=$(az group show -n "$PROJECT_RG" --query id -o tsv)
 log "Terraform state storage"
 STATE_SA=$(az storage account list -g "$STATE_RG" --query "[?tags.purpose=='tfstate'].name | [0]" -o tsv)
 if [[ -z "$STATE_SA" ]]; then
-  STATE_SA="stdfcasttfstate$(tr -dc 'a-z0-9' </dev/urandom | head -c 5)"
+  # finite read: an endless /dev/urandom pipe dies with SIGPIPE under pipefail
+  STATE_SA="stdfcasttfstate$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-5)"
   az storage account create -n "$STATE_SA" -g "$STATE_RG" -l "$LOCATION" \
     --sku Standard_LRS --kind StorageV2 --min-tls-version TLS1_2 \
     --allow-blob-public-access false --https-only true \
