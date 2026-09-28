@@ -4,7 +4,10 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements/app.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+# Packaging tools (pip/setuptools/wheel) are not needed at runtime and carry CVEs,
+# so they are removed from both the virtualenv and the base interpreter.
+RUN pip install -r /tmp/requirements.txt \
+    && pip uninstall -y setuptools wheel pip
 
 # ---- runtime stage ----
 FROM python:3.11-slim
@@ -12,6 +15,7 @@ FROM python:3.11-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y setuptools wheel pip \
     && useradd --create-home --uid 10001 app
 COPY --from=build /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
