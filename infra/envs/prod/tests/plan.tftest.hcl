@@ -32,7 +32,7 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_container_registry" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.ContainerRegistry/registries/crdfcastprodcinabcd"
+      id           = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.ContainerRegistry/registries/crdfcastprodcinabcd"
       login_server = "crdfcastprodcinabcd.azurecr.io"
     }
   }
@@ -53,7 +53,7 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_user_assigned_identity" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-dfcast-prod-cin-app"
+      id           = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-dfcast-prod-cin-app"
       principal_id = "00000000-0000-0000-0000-000000000004"
       client_id    = "00000000-0000-0000-0000-000000000005"
     }
@@ -65,7 +65,7 @@ mock_provider "azurerm" {
   }
   mock_resource "azurerm_container_app" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.App/containerApps/ca-dfcast-prod-cin"
+      id      = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.App/containerApps/ca-dfcast-prod-cin"
       ingress = { fqdn = "ca-dfcast-prod-cin.example.centralindia.azurecontainerapps.io" }
     }
   }
