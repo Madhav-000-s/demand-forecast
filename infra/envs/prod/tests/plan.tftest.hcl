@@ -76,7 +76,15 @@ mock_provider "azurerm" {
   }
 }
 
-mock_provider "random" {}
+# Mock generators ignore length/charset settings, so pin a realistic suffix
+# (4 lowercase alphanumerics, as random_string.suffix produces for real).
+mock_provider "random" {
+  mock_resource "random_string" {
+    defaults = {
+      result = "a1b2"
+    }
+  }
+}
 mock_provider "time" {}
 
 variables {
