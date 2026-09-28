@@ -5,8 +5,9 @@ provisioned with Terraform, shipped by GitHub Actions, watched with Application
 Insights dashboards and alerts, and held to written SLOs. The model is deliberately
 simple; the platform around it is the point.
 
-> Status: **Milestone 1 (model + API)** done. Infrastructure, CI/CD, observability
-> and drills are next. See the roadmap below.
+> Status: **Milestones 1-2 done**: model, API, Terraform and GitHub Actions
+> workflows. Next: Azure accounts and identity, then the first deploy
+> ([docs/setup.md](docs/setup.md)).
 
 ## Model
 
@@ -77,7 +78,7 @@ python -m ml.gate --candidate artifacts/metrics.json
 
 uvicorn app.main:app --reload            # http://localhost:8000/docs
 pytest                                    # unit + API contract tests (synthetic data, no CSV needed)
-ruff check . && ruff format --check . && mypy app ml
+ruff check . && ruff format --check . && mypy app ml scripts
 ```
 
 Docker (artifacts are baked into the image, so one tag pins one model):
@@ -87,21 +88,62 @@ docker build -t dfcast:dev .
 docker run --rm -p 8000:8000 dfcast:dev
 ```
 
+## Platform
+
+```
+GitHub (PR) ── pr.yml: ruff · mypy · pytest+coverage · terraform fmt/validate/plan · Checkov · Trivy · SonarCloud
+   │ merge
+   ├─ infra.yml ── terraform apply (OIDC, no secrets) ──► Azure (Central India)
+   ├─ train.yml ── Azure ML command job ─► promotion gate ─► model registry (dfcast-lgbm:N)
+   │                                                            │
+   └─ deploy.yml ◄──────────────────────────────────────────────┘
+        build image with model N ─► ACR ─► Container Apps revision at 0%
+        ─► smoke test on the canary label URL ─► 10% traffic ─► 10-min analysis
+           (App Insights: canary 5xx rate and p95) ─► promote to 100% or roll back
+```
+
+| Azure resource | Purpose |
+|---|---|
+| Container Apps (multiple-revision mode, 0-3 replicas) | API hosting, canary traffic splitting |
+| Container Registry (Basic) | Images, pulled by the app's managed identity |
+| Azure Machine Learning (workspace, 0-1 node CPU cluster, model registry) | Training jobs and model versions |
+| Log Analytics + Application Insights (OpenTelemetry) | Traces, logs, SLO queries |
+| Key Vault (RBAC) | App secrets, read via managed identity |
+| Monitor alerts + action group, budget | Latency / 5xx SLO alerts, restarts, $25/$50/$75 spend |
+
+Each alert links to a runbook in [docs/runbooks](docs/runbooks). Every PR uses
+a template with a risk level and rollback plan; `main` requires review
+(CODEOWNERS) and green checks.
+
+### Canary safety checks
+
+Training writes `canary_reference.json`: 20 fixed requests with the predictions
+the model produced and the seasonal-naive values for the same days. Before a new
+revision gets any traffic, the smoke test requires its answers to match the
+training output (so the image contains the model we think it does) and to stay
+within SMAPE 35 of seasonal naive. The real model scores 13.7; a constant model
+scores 53. A model that returns plausible-looking nonsense with HTTP 200 is
+stopped here, not by users.
+
 ## Repository layout
 
 ```
-app/        FastAPI service, model loading, JSON logging
-ml/         features (shared with the API), training, metrics, promotion gate, drift statistics
-tests/      unit tests and API contract tests
-requirements/  app (runtime), train, dev
+app/              FastAPI service, model loading, JSON logs, OpenTelemetry
+ml/               features (shared with the API), training, metrics, promotion gate,
+                  drift statistics, canary reference; ml/aml/ = Azure ML job spec
+scripts/          post-deploy smoke test, canary analysis
+tests/            unit and API contract tests (synthetic data)
+infra/bootstrap/  one-time script: providers, state storage, GitHub OIDC identity
+infra/modules/    observability, registry, keyvault, container_app, alerts, azureml
+infra/envs/prod/  root configuration and remote-state backend
+.github/          workflows, PR template, CODEOWNERS, Dependabot
+docs/             setup guide, runbooks
 ```
-
-Coming next: `infra/` (Terraform), `.github/workflows/`, `drift/`, `loadtest/`, `chaos/`, `docs/`.
 
 ## Roadmap
 
 1. ~~Model and API~~
-2. Terraform (Container Apps, ACR, Key Vault, App Insights, Azure ML) and GitHub Actions workflows
+2. ~~Terraform (Container Apps, ACR, Key Vault, App Insights, Azure ML) and GitHub Actions workflows~~
 3. Accounts and identity (OIDC, state storage, SonarCloud)
 4. First deploy
 5. Observability dashboards, SLO alerts, canary deploys with automated rollback, drift-triggered retraining
