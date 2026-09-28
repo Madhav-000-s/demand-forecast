@@ -8,6 +8,8 @@ framework:
   - dockerfile
   - github_actions
 quiet: true
+skip-path:
+  - .terraform # provider/module cache created by terraform init in CI
 skip-check:
   # Private networking (private endpoints, disabled public access, firewalls).
   # Needs a VNet, private DNS and a self-hosted runner for CI to reach the

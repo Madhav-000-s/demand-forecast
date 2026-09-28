@@ -82,11 +82,16 @@ jobs:
           terraform validate
           terraform test
 
-      - name: Checkov (Terraform, Dockerfile, workflows; see .checkov.yaml)
-        uses: bridgecrewio/checkov-action@v12.1347.0
+      # Pinned CLI instead of checkov-action: the action bundles an older Checkov
+      # that does not know azurerm v5 attribute names (false positives).
+      - uses: actions/setup-python@v7
         with:
-          directory: .
-          config_file: .checkov.yaml # frameworks and justified skips live there
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Checkov (Terraform, Dockerfile, workflows; see .checkov.yaml)
+        run: |
+          pip install checkov==3.3.20
+          checkov -d . --config-file .checkov.yaml
 
   image:
     name: image build, smoke test, trivy
