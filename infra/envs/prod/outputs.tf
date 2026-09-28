@@ -1,0 +1,10 @@
+output "resource_group" { value = data.azurerm_resource_group.this.name }
+output "acr_name" { value = module.registry.name }
+output "acr_login_server" { value = module.registry.login_server }
+output "app_insights_id" { value = module.observability.app_insights_id }
+output "app_insights_app_id" { value = module.observability.app_insights_app_id }
+output "aml_workspace" { value = module.azureml.workspace_name }
+output "aml_cluster" { value = module.azureml.cluster_name }
+output "container_app_name" { value = try(module.container_app[0].app_name, null) }
+output "app_url" { value = try("https://${module.container_app[0].fqdn}", null) }
+output "environment_default_domain" { value = try(module.container_app[0].environment_default_domain, null) }

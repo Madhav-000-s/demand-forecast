@@ -1,0 +1,47 @@
+# Checkov configuration for infra/ and the Dockerfile.
+# Every skip below is a deliberate trade-off for a single-region project on a
+# $100 Azure for Students credit; each would be revisited for a real production
+# workload. Anything not listed here fails the PR.
+compact: true
+quiet: true
+skip-check:
+  # Private networking (private endpoints, disabled public access, firewalls).
+  # Needs a VNet, private DNS and a self-hosted runner for CI to reach the
+  # resources; out of scope for cost. Access is controlled by Entra ID / RBAC.
+  - CKV_AZURE_59    # storage: disallow public network access
+  - CKV_AZURE_139   # ACR: disable public networking
+  - CKV_AZURE_189   # Key Vault: disable public network access
+  - CKV_AZURE_109   # Key Vault: firewall rules
+  - CKV_AZURE_144   # AML workspace: disable public access
+  - CKV2_AZURE_32   # Key Vault: private endpoint
+  - CKV2_AZURE_33   # storage: private endpoint
+  - CKV2_AZURE_49   # AML workspace: managed network isolation
+  - CKV2_AZURE_50   # AML storage not publicly accessible
+  # Premium-only ACR features (Basic SKU keeps the registry at ~$5/month).
+  - CKV_AZURE_163   # vulnerability scanning in ACR (Trivy scans images in CI instead)
+  - CKV_AZURE_164   # content trust / signed images
+  - CKV_AZURE_165   # geo-replication
+  - CKV_AZURE_166   # quarantine
+  - CKV_AZURE_167   # untagged manifest retention
+  - CKV_AZURE_233   # zone redundancy
+  - CKV_AZURE_237   # dedicated data endpoints
+  # Single region, replaceable data (state is versioned; data can be re-uploaded).
+  - CKV_AZURE_206   # storage replication beyond LRS
+  # Customer-managed keys: platform-managed encryption is used.
+  - CKV2_AZURE_1
+  # Purge protection would block `terraform destroy` + re-apply with the same
+  # names for 7+ days. Soft delete stays on.
+  - CKV_AZURE_110
+  - CKV_AZURE_42
+  # The App Insights connection string is an ingestion endpoint, not a rotating
+  # credential; an expiry date would silently break telemetry.
+  - CKV_AZURE_41
+  # Azure ML's datastore uses the account key by default; identity-based
+  # datastores are a later hardening step.
+  - CKV2_AZURE_40
+  # Queue service is unused (no queues are created).
+  - CKV_AZURE_33
+  # GitHub Actions: workflow_dispatch inputs are how an operator picks a model
+  # version (rollback) or states why a retrain ran. Inputs are passed through
+  # env vars and validated, never interpolated into scripts.
+  - CKV_GHA_7
