@@ -1,0 +1,4 @@
+# Every change needs a review from an owner (enforced by branch protection on main).
+*                    @Madhav-000-s
+/infra/              @Madhav-000-s
+/.github/workflows/  @Madhav-000-s
