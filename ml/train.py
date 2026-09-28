@@ -13,6 +13,7 @@ Outputs (all in --out):
     metadata.json         version, git SHA, dataset hash, params, metrics
     metrics.json          test metrics for the model and baselines
     reference_stats.json  per-feature histograms for the drift job
+    canary_reference.json fixed requests + expected outputs for post-deploy smoke tests
     history.npz           recent sales per series, used by the API for features
 """
 
@@ -32,6 +33,7 @@ from typing import Any
 import lightgbm as lgb
 import numpy as np
 
+from ml import canary
 from ml import data as data_mod
 from ml.drift_stats import reference_stats
 from ml.features import (
@@ -232,6 +234,8 @@ def run(
     stats = reference_stats(x_full, FEATURE_NAMES, CATEGORICAL_FEATURES)
     (out / "reference_stats.json").write_text(json.dumps(stats, indent=2))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    reference = canary.build_reference(booster, panel)
+    (out / "canary_reference.json").write_text(json.dumps(reference, indent=2))
     metadata = {
         "model_version": version,
         "git_sha": sha,
