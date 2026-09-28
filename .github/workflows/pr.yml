@@ -1,0 +1,203 @@
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  TERRAFORM_VERSION: "1.16.4"
+
+jobs:
+  python:
+    name: lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # SonarCloud needs history for new-code detection
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: pip install -r requirements/dev.txt
+
+      - name: Ruff
+        run: |
+          ruff check --output-format=github .
+          ruff format --check .
+
+      - name: Mypy
+        run: mypy app ml scripts
+
+      - name: Pytest
+        run: pytest --cov --cov-report=xml --cov-report=term --junitxml=junit.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            coverage.xml
+            junit.xml
+
+      # Enabled once the repo is public and linked to SonarCloud:
+      #   gh variable set SONAR_ENABLED --body true ; gh secret set SONAR_TOKEN
+      - name: SonarCloud scan
+        if: vars.SONAR_ENABLED == 'true'
+        uses: SonarSource/sonarqube-scan-action@v8.2.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  terraform:
+    name: terraform fmt, validate, test, checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: terraform validate + test (mocked providers)
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+
+      - name: Checkov (Terraform, Dockerfile, workflows)
+        uses: bridgecrewio/checkov-action@v12.1347.0
+        with:
+          directory: .
+          framework: terraform,dockerfile,github_actions
+          config_file: .checkov.yaml
+
+  image:
+    name: image build, smoke test, trivy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Synthetic model artifacts (real models come from the Azure ML registry)
+        run: |
+          pip install -r requirements/train.txt
+          python -m ml.synthetic --out artifacts --model-version pr-${{ github.event.pull_request.number }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: dfcast-api:pr
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container smoke test
+        run: |
+          docker run -d --name api -p 8000:8000 dfcast-api:pr
+          python scripts/smoke_test.py --base-url http://localhost:8000 \
+            --reference artifacts/canary_reference.json \
+            --expected-version pr-${{ github.event.pull_request.number }} --ready-timeout 60
+
+      - name: Container logs
+        if: always()
+        run: docker logs api --tail 50 || true
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: dfcast-api:pr
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  plan:
+    name: terraform plan
+    needs: terraform
+    # Runs once Azure OIDC is configured (milestone 3); skipped for forks.
+    if: vars.AZURE_CLIENT_ID != '' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+      TF_VAR_app_image: ${{ vars.APP_IMAGE }}
+    defaults:
+      run:
+        working-directory: infra/envs/prod
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: >-
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}"
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan | tee plan.log
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Comment plan on the PR
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@v9
+        env:
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const dir = 'infra/envs/prod/';
+            const file = fs.existsSync(dir + 'plan.txt') ? dir + 'plan.txt' : dir + 'plan.log';
+            let plan = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 'no plan output';
+            if (plan.length > 60000) plan = plan.slice(0, 60000) + '\n... truncated';
+            const marker = '<!-- terraform-plan -->';
+            const body = `${marker}\n### Terraform plan (prod): ${process.env.PLAN_OUTCOME}\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

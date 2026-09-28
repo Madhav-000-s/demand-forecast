@@ -26,5 +26,7 @@ COPY app/ ./app/
 COPY artifacts/model.txt artifacts/metadata.json artifacts/history.npz artifacts/reference_stats.json ./artifacts/
 USER 10001
 EXPOSE 8000
-# Container Apps probes /healthz and /readyz; no Docker HEALTHCHECK needed.
+# For local `docker run`; Container Apps uses its own startup/readiness/liveness probes.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "20", "--no-access-log"]
