@@ -82,12 +82,11 @@ jobs:
           terraform validate
           terraform test
 
-      - name: Checkov (Terraform, Dockerfile, workflows)
+      - name: Checkov (Terraform, Dockerfile, workflows; see .checkov.yaml)
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
           directory: .
-          framework: terraform,dockerfile,github_actions
-          config_file: .checkov.yaml
+          config_file: .checkov.yaml # frameworks and justified skips live there
 
   image:
     name: image build, smoke test, trivy

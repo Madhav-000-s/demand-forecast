@@ -3,6 +3,10 @@
 # $100 Azure for Students credit; each would be revisited for a real production
 # workload. Anything not listed here fails the PR.
 compact: true
+framework:
+  - terraform
+  - dockerfile
+  - github_actions
 quiet: true
 skip-check:
   # Private networking (private endpoints, disabled public access, firewalls).
