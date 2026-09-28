@@ -174,7 +174,7 @@ def train(
         callbacks=[lgb.early_stopping(early_stopping, verbose=False)],
     )
     best_iter = booster.best_iteration or max_rounds
-    val_pred = from_target(booster.predict(x_va, num_iteration=best_iter))
+    val_pred = from_target(np.asarray(booster.predict(x_va, num_iteration=best_iter)))
     val_metrics = score(y_va, val_pred)
     log.info("validation: best_iter=%d %s (%.1fs)", best_iter, val_metrics, time.perf_counter() - t0)
 
@@ -185,7 +185,7 @@ def train(
     # 3) score the final model on the test window
     test_first, test_last = forecast_window(splits.val_end, panel.end)
     x_te, y_te = features_and_target(panel, test_first, test_last, origin=splits.val_end)
-    test_pred = from_target(final.predict(x_te))
+    test_pred = from_target(np.asarray(final.predict(x_te)))
     model_metrics = score(y_te, test_pred)
     base = baselines(panel, test_first, test_last, splits.val_end)
     log.info("test: model=%s baselines=%s", model_metrics, base)
