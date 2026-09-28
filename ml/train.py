@@ -13,6 +13,7 @@ Outputs (all in --out):
     metadata.json         version, git SHA, dataset hash, params, metrics
     metrics.json          test metrics for the model and baselines
     reference_stats.json  per-feature histograms for the drift job
+    canary_reference.json fixed requests + expected outputs for post-deploy smoke tests
     history.npz           recent sales per series, used by the API for features
 """
 
@@ -32,6 +33,7 @@ from typing import Any
 import lightgbm as lgb
 import numpy as np
 
+from ml import canary
 from ml import data as data_mod
 from ml.drift_stats import reference_stats
 from ml.features import (
@@ -172,7 +174,7 @@ def train(
         callbacks=[lgb.early_stopping(early_stopping, verbose=False)],
     )
     best_iter = booster.best_iteration or max_rounds
-    val_pred = from_target(booster.predict(x_va, num_iteration=best_iter))
+    val_pred = from_target(np.asarray(booster.predict(x_va, num_iteration=best_iter)))
     val_metrics = score(y_va, val_pred)
     log.info("validation: best_iter=%d %s (%.1fs)", best_iter, val_metrics, time.perf_counter() - t0)
 
@@ -183,7 +185,7 @@ def train(
     # 3) score the final model on the test window
     test_first, test_last = forecast_window(splits.val_end, panel.end)
     x_te, y_te = features_and_target(panel, test_first, test_last, origin=splits.val_end)
-    test_pred = from_target(final.predict(x_te))
+    test_pred = from_target(np.asarray(final.predict(x_te)))
     model_metrics = score(y_te, test_pred)
     base = baselines(panel, test_first, test_last, splits.val_end)
     log.info("test: model=%s baselines=%s", model_metrics, base)
@@ -232,6 +234,8 @@ def run(
     stats = reference_stats(x_full, FEATURE_NAMES, CATEGORICAL_FEATURES)
     (out / "reference_stats.json").write_text(json.dumps(stats, indent=2))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    reference = canary.build_reference(booster, panel)
+    (out / "canary_reference.json").write_text(json.dumps(reference, indent=2))
     metadata = {
         "model_version": version,
         "git_sha": sha,

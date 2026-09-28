@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from app import logging_setup
+from app import logging_setup, telemetry
 from app.model import ForecastModel, ForecastRangeError
 from app.schemas import (
     BatchRequest,
@@ -72,12 +72,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+TELEMETRY_ENABLED = telemetry.configure()
+
 app = FastAPI(
     title="Demand Forecast API",
     version="1.0.0",
     description="Daily unit-sales forecasts for 10 stores x 50 items, up to 90 days ahead.",
     lifespan=lifespan,
 )
+if TELEMETRY_ENABLED:
+    telemetry.instrument_app(app)
 
 
 @app.middleware("http")

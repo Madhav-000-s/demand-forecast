@@ -39,3 +39,6 @@ crash.log
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Terraform backend config with real names
+infra/envs/prod/backend.hcl

@@ -4,7 +4,10 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements/app.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+# Packaging tools (pip/setuptools/wheel) are not needed at runtime and carry CVEs,
+# so they are removed from both the virtualenv and the base interpreter.
+RUN pip install -r /tmp/requirements.txt \
+    && pip uninstall -y setuptools wheel pip
 
 # ---- runtime stage ----
 FROM python:3.11-slim
@@ -12,6 +15,7 @@ FROM python:3.11-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y setuptools wheel pip \
     && useradd --create-home --uid 10001 app
 COPY --from=build /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
@@ -26,5 +30,7 @@ COPY app/ ./app/
 COPY artifacts/model.txt artifacts/metadata.json artifacts/history.npz artifacts/reference_stats.json ./artifacts/
 USER 10001
 EXPOSE 8000
-# Container Apps probes /healthz and /readyz; no Docker HEALTHCHECK needed.
+# For local `docker run`; Container Apps uses its own startup/readiness/liveness probes.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "20", "--no-access-log"]

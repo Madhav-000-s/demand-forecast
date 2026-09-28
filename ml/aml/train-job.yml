@@ -1,0 +1,31 @@
+# Azure ML command job: trains the model on the workspace compute cluster.
+# Submitted by .github/workflows/train.yml:
+#   az ml job create -f ml/aml/train-job.yml --set environment_variables.GITHUB_SHA=<sha>
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+experiment_name: dfcast-train
+display_name: dfcast-train
+description: LightGBM demand forecasting model (500 store-item series, 91-day direct horizon)
+code: ../..
+command: >-
+  python -m ml.train
+  --data ${{inputs.data}}
+  --out ${{outputs.model}}
+inputs:
+  data:
+    type: uri_file
+    path: azureml:store-item-sales@latest
+outputs:
+  model:
+    type: uri_folder
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
+  conda_file: conda.yml
+compute: azureml:cpu-cluster
+environment_variables:
+  GITHUB_SHA: unknown
+  OMP_NUM_THREADS: "2"
+resources:
+  instance_count: 1
+limits:
+  timeout: 3600

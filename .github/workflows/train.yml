@@ -1,0 +1,159 @@
+name: train
+
+# Trains the model as an Azure ML command job, runs the promotion gate against
+# the model currently registered, registers the candidate if it passes, and
+# releases it through deploy.yml (canary).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ml/**
+      - requirements/train.txt
+      - .github/workflows/train.yml
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this run (shown in the run summary and model tags)
+        type: string
+        default: manual
+      deploy:
+        description: Release the model if it passes the gate
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: train-prod
+  cancel-in-progress: false
+
+env:
+  MODEL_NAME: dfcast-lgbm
+  TERRAFORM_VERSION: "1.16.4"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      registered: ${{ steps.register.outputs.registered }}
+      aml_model_version: ${{ steps.register.outputs.aml_model_version }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install (for the promotion gate)
+        run: pip install -r requirements/train.txt
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Read infrastructure outputs
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}" >/dev/null
+          echo "RG=$(terraform output -raw resource_group)" >> "$GITHUB_ENV"
+          echo "AML_WS=$(terraform output -raw aml_workspace)" >> "$GITHUB_ENV"
+
+      - name: Azure ML CLI
+        run: |
+          az extension add -n ml -y --upgrade
+          az configure --defaults group="$RG" workspace="$AML_WS"
+
+      - name: Submit training job
+        id: job
+        env:
+          REASON: ${{ inputs.reason || 'push' }}
+        run: |
+          job=$(az ml job create -f ml/aml/train-job.yml \
+            --set environment_variables.GITHUB_SHA="$GITHUB_SHA" \
+            --set tags.git_sha="$GITHUB_SHA" tags.reason="$REASON" \
+            --query name -o tsv)
+          echo "name=$job" >> "$GITHUB_OUTPUT"
+          echo "Submitted Azure ML job \`$job\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for the job
+        run: |
+          job=${{ steps.job.outputs.name }}
+          az ml job stream -n "$job" || true   # stream can drop; the status check decides
+          for _ in $(seq 1 120); do
+            status=$(az ml job show -n "$job" --query status -o tsv)
+            case "$status" in
+              Completed) echo "job $job completed"; exit 0 ;;
+              Failed|Canceled|NotResponding) echo "::error::job $job ended as $status"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for $job"; exit 1
+
+      - name: Download candidate
+        run: |
+          az ml job download -n "${{ steps.job.outputs.name }}" --output-name model --download-path out
+          cand=$(dirname "$(find out -name metrics.json | head -1)")
+          echo "CANDIDATE_DIR=$cand" >> "$GITHUB_ENV"
+          ls -la "$cand"
+
+      - name: Download production model metrics
+        run: |
+          prod_version=$(az ml model list -n "$MODEL_NAME" --query "[0].version" -o tsv 2>/dev/null || true)
+          if [ -n "$prod_version" ]; then
+            az ml model download -n "$MODEL_NAME" -v "$prod_version" --download-path prod
+            echo "PROD_METRICS=$(find prod -name metrics.json | head -1)" >> "$GITHUB_ENV"
+            echo "Comparing against registered version $prod_version" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No registered model yet; gate checks the baseline only" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Promotion gate
+        run: |
+          args=(--candidate "$CANDIDATE_DIR/metrics.json")
+          if [ -n "${PROD_METRICS:-}" ]; then args+=(--production "$PROD_METRICS"); fi
+          python -m ml.gate "${args[@]}"
+
+      - name: Register model
+        id: register
+        run: |
+          meta="$CANDIDATE_DIR/metadata.json"
+          mv_label=$(jq -r .model_version "$meta")
+          smape=$(jq -r .metrics.model.smape "$meta")
+          naive=$(jq -r .metrics.baselines.seasonal_naive.smape "$meta")
+          version=$(az ml model create -n "$MODEL_NAME" --type custom_model \
+            --path "azureml://jobs/${{ steps.job.outputs.name }}/outputs/model" \
+            --description "LightGBM, test SMAPE $smape (seasonal naive $naive)" \
+            --tags model_version="$mv_label" git_sha="$GITHUB_SHA" test_smape="$smape" \
+                   seasonal_naive_smape="$naive" job="${{ steps.job.outputs.name }}" \
+            --query version -o tsv)
+          echo "registered=true" >> "$GITHUB_OUTPUT"
+          echo "aml_model_version=$version" >> "$GITHUB_OUTPUT"
+          echo "Registered **$MODEL_NAME:$version** ($mv_label), test SMAPE $smape vs seasonal naive $naive" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: train
+    if: needs.train.outputs.registered == 'true' && (github.event_name == 'push' || inputs.deploy)
+    uses: ./.github/workflows/deploy.yml
+    with:
+      model_version: ${{ needs.train.outputs.aml_model_version }}
+    secrets: inherit

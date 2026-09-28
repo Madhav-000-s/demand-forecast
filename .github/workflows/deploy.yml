@@ -1,0 +1,224 @@
+name: deploy
+
+# Builds an image that bakes in one registered model and releases it as a canary:
+#   1. pin 100% of traffic to the current stable revision
+#   2. create the new revision (0% traffic) and label it `canary`
+#   3. smoke-test the canary label URL (contract + canary_reference checks)
+#   4. shift 10% of traffic to it and run canary analysis for 10 minutes
+#      (App Insights: 5xx rate and p95 of the canary revision only)
+#   5. promote to 100%, or roll back to the stable revision and fail
+#
+# Before the Container App exists (first rollout) it stops after pushing the
+# image and prints the APP_IMAGE value for Terraform.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - ml/features.py
+      - ml/canary.py
+      - Dockerfile
+      - requirements/app.txt
+      - scripts/smoke_test.py
+      - scripts/canary_analysis.py
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+    inputs:
+      model_version:
+        description: Azure ML registry version of dfcast-lgbm (blank = latest)
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      model_version:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  MODEL_NAME: dfcast-lgbm
+  IMAGE_NAME: dfcast-api
+  TERRAFORM_VERSION: "1.16.4"
+  CANARY_PERCENT: "10"
+  CANARY_MINUTES: "10"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install (smoke test + canary analysis)
+        run: pip install -r requirements/train.txt
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Read infrastructure outputs
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}" >/dev/null
+          out() { terraform output -raw "$1" 2>/dev/null || true; }
+          {
+            echo "RG=$(out resource_group)"
+            echo "ACR_NAME=$(out acr_name)"
+            echo "ACR_SERVER=$(out acr_login_server)"
+            echo "AML_WS=$(out aml_workspace)"
+            echo "APPI_ID=$(out app_insights_id)"
+            echo "APPI_APP_ID=$(out app_insights_app_id)"
+            echo "APP=$(out container_app_name)"
+            echo "ENV_DOMAIN=$(out environment_default_domain)"
+          } >> "$GITHUB_ENV"
+
+      - name: Azure CLI setup
+        run: |
+          az extension add -n ml -y --upgrade   # containerapp and rest are core commands
+          az configure --defaults group="$RG" workspace="$AML_WS"
+
+      - name: Download model from the Azure ML registry
+        env:
+          REQUESTED_VERSION: ${{ inputs.model_version }}
+        run: |
+          v="$REQUESTED_VERSION"
+          if ! [[ "$v" =~ ^[0-9]*$ ]]; then echo "::error::model_version must be a number"; exit 1; fi
+          if [ -z "$v" ]; then v=$(az ml model list -n "$MODEL_NAME" --query "[0].version" -o tsv); fi
+          if [ -z "$v" ]; then echo "::error::no registered $MODEL_NAME model; run the train workflow first"; exit 1; fi
+          az ml model download -n "$MODEL_NAME" -v "$v" --download-path dl
+          src=$(dirname "$(find dl -name model.txt | head -1)")
+          mkdir -p artifacts && cp "$src"/* artifacts/
+          {
+            echo "AML_MODEL_VERSION=$v"
+            echo "MODEL_LABEL=$(jq -r .model_version artifacts/metadata.json)"
+            # revision suffix: lowercase letters, digits, hyphens; starts with a letter
+            echo "SUFFIX=g${GITHUB_SHA::7}-m${v}-r${GITHUB_RUN_NUMBER}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and push image
+        run: |
+          IMAGE="$ACR_SERVER/$IMAGE_NAME:${GITHUB_SHA::7}-m$AML_MODEL_VERSION"
+          az acr login -n "$ACR_NAME"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "Built \`$IMAGE\` with model **$MODEL_LABEL** (registry version $AML_MODEL_VERSION)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: First rollout (no Container App yet)
+        if: env.APP == ''
+        run: |
+          {
+            echo "The Container App does not exist yet. Set the image for its first revision and apply Terraform:"
+            echo '```'
+            echo "gh variable set APP_IMAGE --body \"$IMAGE\""
+            echo "gh workflow run infra.yml"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pin traffic to the stable revision
+        id: stable
+        if: env.APP != ''
+        run: |
+          stable=$(az containerapp revision list -n "$APP" -g "$RG" \
+            --query "sort_by([?properties.active && properties.trafficWeight > \`0\`], &properties.trafficWeight)[-1].name" -o tsv)
+          echo "name=$stable" >> "$GITHUB_OUTPUT"
+          echo "STABLE=$stable" >> "$GITHUB_ENV"
+          az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$stable=100" -o none
+          echo "Stable revision: \`$stable\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create canary revision (0% traffic)
+        id: canary
+        if: env.APP != ''
+        run: |
+          az containerapp update -n "$APP" -g "$RG" --image "$IMAGE" --revision-suffix "$SUFFIX" -o none
+          new="$APP--$SUFFIX"
+          echo "name=$new" >> "$GITHUB_OUTPUT"
+          echo "CANARY=$new" >> "$GITHUB_ENV"
+          az containerapp revision label add -n "$APP" -g "$RG" --revision "$new" --label canary --yes -o none
+          echo "Canary revision: \`$new\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test the canary (label URL, no user traffic)
+        if: env.APP != ''
+        run: |
+          python scripts/smoke_test.py \
+            --base-url "https://$APP---canary.$ENV_DOMAIN" \
+            --reference artifacts/canary_reference.json \
+            --expected-version "$MODEL_LABEL" --ready-timeout 240
+
+      - name: Annotate deployment in App Insights
+        if: env.APP != ''
+        continue-on-error: true
+        run: |
+          props=$(jq -cn --arg rev "$CANARY" --arg model "$MODEL_LABEL" --arg sha "$GITHUB_SHA" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{revision:$rev, model:$model, commit:$sha, run:$run}')
+          body=$(jq -cn --arg name "canary $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$props" \
+            '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:$p}]')
+          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" --body "$body" -o none
+
+      - name: Shift ${{ env.CANARY_PERCENT }}% of traffic to the canary
+        if: env.APP != ''
+        run: |
+          az containerapp ingress traffic set -n "$APP" -g "$RG" \
+            --revision-weight "$STABLE=$((100 - CANARY_PERCENT))" "$CANARY=$CANARY_PERCENT" -o none
+
+      - name: Canary analysis (${{ env.CANARY_MINUTES }} minutes)
+        if: env.APP != ''
+        run: |
+          fqdn=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          python scripts/canary_analysis.py --app-url "https://$fqdn" --revision "$CANARY" \
+            --appinsights-app-id "$APPI_APP_ID" --minutes "$CANARY_MINUTES"
+
+      - name: Promote canary to 100%
+        if: env.APP != ''
+        run: |
+          az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$CANARY=100" -o none
+          az containerapp revision label remove -n "$APP" -g "$RG" --label canary -o none || true
+          if [ "$STABLE" != "$CANARY" ]; then
+            az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$STABLE" -o none
+          fi
+          echo "**Promoted** \`$CANARY\` to 100%; \`$STABLE\` deactivated (reactivate it to roll back)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Roll back
+        if: failure() && steps.canary.outcome == 'success'
+        run: |
+          az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$STABLE=100" -o none
+          az containerapp revision label remove -n "$APP" -g "$RG" --label canary -o none || true
+          az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$CANARY" -o none || true
+          echo "**Rolled back**: 100% on \`$STABLE\`, \`$CANARY\` deactivated." >> "$GITHUB_STEP_SUMMARY"
+          body=$(jq -cn --arg name "rollback $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:"{}"}]')
+          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" --body "$body" -o none || true
+
+      - name: Restore traffic if the canary was never created
+        if: failure() && steps.stable.outcome == 'success' && steps.canary.outcome != 'success'
+        run: az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$STABLE=100" -o none
