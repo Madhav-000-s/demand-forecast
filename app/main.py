@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from app import faults as fault_injection
 from app import logging_setup, telemetry
 from app.model import ForecastModel, ForecastRangeError
 from app.schemas import (
@@ -50,6 +52,7 @@ class State:
     model: ForecastModel | None = None
     ready: bool = False
     load_error: str | None = None
+    faults: fault_injection.Faults = fault_injection.Faults()
 
 
 state = State()
@@ -81,7 +84,9 @@ def load_model(artifact_dir: str) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logging_setup.configure(os.environ.get("LOG_LEVEL", "INFO"))
-    load_model(os.environ.get("ARTIFACT_DIR", "artifacts"))
+    artifact_dir = os.environ.get("ARTIFACT_DIR", "artifacts")
+    state.faults = fault_injection.load(artifact_dir)
+    load_model(artifact_dir)
     yield
 
 
@@ -103,6 +108,8 @@ async def request_context(request: Request, call_next: Callable[[Request], Await
     request.state.request_id = request_id
     request.state.traffic_source = traffic_source(request)
     t0 = time.perf_counter()
+    if state.faults.extra_latency_ms and request.url.path.startswith("/v1/"):
+        await asyncio.sleep(state.faults.extra_latency_ms / 1000)  # drill images only
     try:
         response = await call_next(request)
     except Exception:
