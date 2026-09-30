@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from app import logging_setup
 from app.main import app
 from ml import data as data_mod
 from ml.train import features_and_target, from_target
@@ -135,10 +136,38 @@ def test_feature_log_line(client: TestClient, caplog: pytest.LogCaptureFixture) 
         client.post("/v1/forecast", json=body(), headers={"X-Request-ID": "drift-1"})
     records = [r for r in caplog.records if r.name == "dfcast.features"]
     assert records
-    fields = records[-1].fields  # type: ignore[attr-defined]
-    assert fields["request_id"] == "drift-1"
-    assert set(fields["features"]) >= {"store", "item", "lag_91", "dow_mean_1y"}
-    json.dumps(fields)  # must be serialisable for the JSON log line
+    rec = records[-1]
+    assert rec.request_id == "drift-1"  # type: ignore[attr-defined]
+    # flat scalar attributes only: App Insights stores them as customDimensions
+    extras = logging_setup.extra_fields(rec)
+    assert all(isinstance(v, (str, int, float)) for v in extras.values()), extras
+    features = json.loads(rec.features_json)  # type: ignore[attr-defined]
+    assert set(features) >= {"store", "item", "lag_91", "dow_mean_1y"}
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [(None, "user"), ("canary", "canary"), ("Drill", "drill"), ("bad value!", "user"), ("x" * 40, "user")],
+)
+def test_traffic_source_is_logged(
+    client: TestClient, caplog: pytest.LogCaptureFixture, header: str | None, expected: str
+) -> None:
+    headers = {"X-Traffic-Source": header} if header else {}
+    with caplog.at_level(logging.INFO, logger="dfcast"):
+        client.post("/v1/forecast", json=body(), headers=headers)
+    feature_rec = [r for r in caplog.records if r.name == "dfcast.features"][-1]
+    request_rec = [r for r in caplog.records if r.getMessage() == "request"][-1]
+    assert feature_rec.traffic_source == expected  # type: ignore[attr-defined]
+    assert request_rec.traffic_source == expected  # type: ignore[attr-defined]
+
+
+def test_json_log_line_carries_extra_fields() -> None:
+    rec = logging.LogRecord("dfcast.api", logging.INFO, __file__, 1, "request", (), None)
+    rec.request_id = "abc"
+    rec.status = 200
+    line = json.loads(logging_setup.JsonFormatter().format(rec))
+    assert line["msg"] == "request" and line["request_id"] == "abc" and line["status"] == 200
+    assert "args" not in line and "levelno" not in line
 
 
 def test_openapi_lists_endpoints(client: TestClient) -> None:

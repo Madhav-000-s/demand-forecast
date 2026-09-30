@@ -5,9 +5,9 @@ provisioned with Terraform, shipped by GitHub Actions, watched with Application
 Insights dashboards and alerts, and held to written SLOs. The model is deliberately
 simple; the platform around it is the point.
 
-> Status: **Milestones 1-2 done**: model, API, Terraform and GitHub Actions
-> workflows. Next: Azure accounts and identity, then the first deploy
-> ([docs/setup.md](docs/setup.md)).
+> Status: **live on Azure** (Central India) since 2026-09-30. Milestones 1-5:
+> model, API, Terraform, CI/CD, first deploy, dashboards and drift detection.
+> Next: chaos drills and a postmortem ([setup](docs/setup.md)).
 
 ## Model
 
@@ -63,8 +63,10 @@ POST /v1/forecast
 
 Bad input returns 422 with the offending field; forecast dates must fall inside the
 window the shipped history supports (reported by `/v1/model`). Every response carries
-`X-Request-ID` and `X-Model-Version`. Each forecast writes one JSON log line with its
+`X-Request-ID` and `X-Model-Version`. Each forecast writes one log record with its
 input features, which the drift job compares against `reference_stats.json`.
+Deploy tooling marks its synthetic requests with `X-Traffic-Source` (`canary`,
+`smoke`) so they are kept out of drift statistics.
 
 ## Run it locally
 
@@ -94,6 +96,8 @@ docker run --rm -p 8000:8000 dfcast:dev
 GitHub (PR) ── pr.yml: ruff · mypy · pytest+coverage · terraform fmt/validate/plan · Checkov · Trivy · SonarCloud
    │ merge
    ├─ infra.yml ── terraform apply (OIDC, no secrets) ──► Azure (Central India)
+   ├─ drift.yml (every 6 h) ── PSI of recent request features vs reference ─► drift_check event
+   │                            └─ on drift: alert + start train.yml (24 h cooldown)
    ├─ train.yml ── Azure ML command job ─► promotion gate ─► model registry (dfcast-lgbm:N)
    │                                                            │
    └─ deploy.yml ◄──────────────────────────────────────────────┘
@@ -104,16 +108,40 @@ GitHub (PR) ── pr.yml: ruff · mypy · pytest+coverage · terraform fmt/vali
 
 | Azure resource | Purpose |
 |---|---|
-| Container Apps (multiple-revision mode, 0-3 replicas) | API hosting, canary traffic splitting |
+| Container Apps (Workload Profiles environment, multiple-revision mode, 0-3 replicas) | API hosting, canary traffic splitting |
 | Container Registry (Basic) | Images, pulled by the app's managed identity |
 | Azure Machine Learning (workspace, 0-1 node CPU cluster, model registry) | Training jobs and model versions |
-| Log Analytics + Application Insights (OpenTelemetry) | Traces, logs, SLO queries |
+| Log Analytics + Application Insights (OpenTelemetry) | Traces, logs, custom metrics, SLO queries |
+| Azure Monitor workbook | SLO / error-budget dashboard, canary traffic, drift history |
 | Key Vault (RBAC) | App secrets, read via managed identity |
-| Monitor alerts + action group, budget | Latency / 5xx SLO alerts, restarts, $25/$50/$75 spend |
+| Monitor alerts + action group, budget | Latency / 5xx SLO alerts, drift, restarts, $25/$50/$75 spend |
 
 Each alert links to a runbook in [docs/runbooks](docs/runbooks). Every PR uses
 a template with a risk level and rollback plan; `main` requires review
 (CODEOWNERS) and green checks.
+
+### Observability and drift
+
+The API exports requests, logs and two custom metrics (forecasts by horizon,
+mean predicted units by model) to Application Insights through OpenTelemetry.
+A Terraform-managed workbook reads them with KQL
+([infra/modules/dashboard/queries](infra/modules/dashboard/queries)): 28-day
+SLOs and error budget left, burn rate over 1 h to 3 d, latency percentiles
+against the 300 ms SLO, traffic by revision during canaries, model outputs,
+cold starts and drift history.
+
+**Drift.** Every 6 hours `drift.yml` pulls the feature vectors of recent
+requests and computes the Population Stability Index of store, item and the
+six history features against the served model's reference. The reference is
+built at training time over the *forecast window* (every series on each of the
+91 days after the data ends), because that is what real requests look like:
+against the 2013-2017 training rows, normal traffic already shows PSI around
+0.25 on history features, since sales in late 2017 sit above the multi-year
+average. Measured on the real data, normal traffic stays below PSI 0.12 with
+500 requests, and a skewed store or item mix scores 0.45 to 7.6. Below 500
+requests the job reports `insufficient_data` instead of guessing. On drift it
+raises an Azure alert and starts `train.yml`, so a retrained model goes
+through the gate and a canary like any other release.
 
 ### Canary safety checks
 
@@ -131,10 +159,10 @@ stopped here, not by users.
 app/              FastAPI service, model loading, JSON logs, OpenTelemetry
 ml/               features (shared with the API), training, metrics, promotion gate,
                   drift statistics, canary reference; ml/aml/ = Azure ML job spec
-scripts/          post-deploy smoke test, canary analysis
+scripts/          post-deploy smoke test, canary analysis, drift check
 tests/            unit and API contract tests (synthetic data)
 infra/bootstrap/  one-time script: providers, state storage, GitHub OIDC identity
-infra/modules/    observability, registry, keyvault, container_app, alerts, azureml
+infra/modules/    observability, registry, keyvault, container_app, alerts, azureml, dashboard
 infra/envs/prod/  root configuration and remote-state backend
 .github/          workflows, PR template, CODEOWNERS, Dependabot
 docs/             setup guide, runbooks
@@ -144,8 +172,8 @@ docs/             setup guide, runbooks
 
 1. ~~Model and API~~
 2. ~~Terraform (Container Apps, ACR, Key Vault, App Insights, Azure ML) and GitHub Actions workflows~~
-3. Accounts and identity (OIDC, state storage, SonarCloud)
-4. First deploy
-5. Observability dashboards, SLO alerts, canary deploys with automated rollback, drift-triggered retraining
+3. ~~Accounts and identity (OIDC, state storage)~~
+4. ~~First deploy~~
+5. ~~Observability dashboards, drift detection and drift-triggered retraining~~
 6. Chaos drills and a postmortem written from real telemetry
 7. Portfolio polish

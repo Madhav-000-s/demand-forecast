@@ -1,0 +1,5 @@
+// X-Traffic-Source: user, canary, smoke, drill. The drift job ignores canary and smoke.
+traces
+| where message == 'request'
+| summarize requests = count() by source = tostring(customDimensions.traffic_source)
+| order by requests desc

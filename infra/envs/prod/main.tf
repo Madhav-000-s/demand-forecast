@@ -105,6 +105,15 @@ module "alerts" {
   tags                     = local.tags
 }
 
+module "dashboard" {
+  source = "../../modules/dashboard"
+
+  resource_group_name = data.azurerm_resource_group.this.name
+  location            = var.location
+  app_insights_id     = module.observability.app_insights_id
+  tags                = local.tags
+}
+
 module "azureml" {
   source = "../../modules/azureml"
 

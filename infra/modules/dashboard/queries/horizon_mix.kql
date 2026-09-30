@@ -1,0 +1,3 @@
+customMetrics
+| where name == 'dfcast_forecasts'
+| summarize forecasts = sum(valueSum) by horizon = tostring(customDimensions.horizon_bucket)

@@ -28,6 +28,8 @@ def reference_stats(features: np.ndarray, names: list[str], categorical: list[st
             }
         else:
             edges = np.unique(np.quantile(col, np.linspace(0, 1, N_BINS + 1)))
+            if edges.size == 1:  # constant in the reference (e.g. year): one bin
+                edges = np.repeat(edges, 2)
             counts = bin_counts(col, edges)
             stats[name] = {
                 "type": "numeric",

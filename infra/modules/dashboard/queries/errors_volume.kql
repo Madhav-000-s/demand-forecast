@@ -1,0 +1,5 @@
+requests
+| where name has '/v1/'
+| summarize requests = count(), error_rate_pct = round(100.0 * countif(toint(resultCode) >= 500) / count(), 2)
+    by bin(timestamp, {TimeRange:grain})
+| order by timestamp asc

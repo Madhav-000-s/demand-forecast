@@ -1,0 +1,7 @@
+customEvents
+| where name == 'drift_check'
+| project timestamp, status = tostring(customDimensions.status), samples = toint(customMeasurements.samples),
+          max_psi = round(todouble(customMeasurements.max_psi), 3), feature = tostring(customDimensions.max_feature),
+          model_version = tostring(customDimensions.model_version), run = tostring(customDimensions.run_url)
+| order by timestamp desc
+| take 50

@@ -79,6 +79,51 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "errors" {
   }
 }
 
+# --- Model drift (results of the drift workflow) -------------------------------
+
+# The drift job (every 6 h) writes a `drift_check` custom event; its status is
+# "drift" when a monitored feature's PSI is above 0.25 on enough traffic. The
+# threshold lives in one place, the workflow, so this rule only reacts to the
+# verdict. Stateful: fires once and resolves when a later check is clean.
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "drift" {
+  count = var.enable_drift_alert ? 1 : 0
+
+  name                    = "alert-drift-${var.name_suffix}"
+  display_name            = "Input drift: feature PSI above threshold"
+  description             = "Drift job reported PSI above threshold on enough traffic. Runbook: docs/runbooks/drift.md"
+  resource_group_name     = var.resource_group_name
+  location                = var.location
+  scopes                  = [var.app_insights_id]
+  severity                = 3
+  evaluation_frequency    = "PT1H"
+  window_duration         = "PT6H"
+  auto_mitigation_enabled = true
+  tags                    = var.tags
+
+  criteria {
+    query                   = <<-KQL
+      customEvents
+      | where name == 'drift_check'
+      | where tostring(customDimensions.status) == 'drift'
+      | summarize max_psi = max(todouble(customMeasurements.max_psi))
+      | where isnotnull(max_psi)
+    KQL
+    metric_measure_column   = "max_psi"
+    time_aggregation_method = "Maximum"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [var.action_group_id]
+  }
+}
+
 # --- Platform alerts (metrics) ------------------------------------------------
 
 resource "azurerm_monitor_metric_alert" "restarts" {

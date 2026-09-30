@@ -58,3 +58,18 @@ def test_a_few_early_errors_below_min_requests_do_not_fail_fast(
 ) -> None:
     stats = [ca.Stats(5, 2, 100.0), ca.Stats(200, 2, 110.0), ca.Stats(300, 2, 110.0), ca.Stats(320, 2, 110.0)]
     assert run(ca, monkeypatch, stats) == 0
+
+
+def test_canary_requests_stay_inside_the_servable_window(ca: ModuleType) -> None:
+    import random
+    from datetime import date, timedelta
+
+    rng = random.Random(0)
+    starts = set()
+    for _ in range(500):
+        b = ca.request_body(rng)
+        start = date.fromisoformat(b["start_date"])
+        last = start + timedelta(days=b["horizon_days"] - 1)
+        assert date(2018, 1, 1) <= start and last <= date(2018, 4, 1)
+        starts.add(start)
+    assert len(starts) > 30  # spread over the window, not one date

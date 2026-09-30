@@ -69,6 +69,11 @@ mock_provider "azurerm" {
       ingress = { fqdn = "ca-dfcast-prod-cin.example.centralindia.azurecontainerapps.io" }
     }
   }
+  mock_resource "azurerm_application_insights_workbook" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.Insights/workbooks/00000000-0000-0000-0000-000000000006"
+    }
+  }
   mock_resource "azurerm_key_vault_secret" {
     defaults = {
       versionless_id = "https://kv-dfcast-prod-cin-abcd.vault.azure.net/secrets/appinsights-connection-string"
@@ -124,6 +129,10 @@ run "first_apply_without_an_image" {
     condition     = output.container_app_name == null
     error_message = "container_app_name should be null before the app exists"
   }
+  assert {
+    condition     = module.alerts.drift_alert_enabled
+    error_message = "The drift alert only needs App Insights, so it exists before the app"
+  }
 }
 
 run "app_and_alerts_with_an_image" {
@@ -165,5 +174,35 @@ run "global_names_fit_azure_limits" {
   assert {
     condition     = can(regex("^[a-z0-9]{3,24}$", module.azureml.storage_account_name))
     error_message = "Storage account name must be 3-24 lowercase alphanumerics"
+  }
+}
+
+run "dashboard_workbook" {
+  command = apply # mocked: the workbook JSON embeds the App Insights id, known only after apply
+
+  variables {
+    app_image = ""
+  }
+
+  assert {
+    condition     = jsondecode(module.dashboard.workbook_json).version == "Notebook/1.0"
+    error_message = "Workbook must be a Notebook/1.0 document"
+  }
+  assert {
+    condition = alltrue([
+      for item in jsondecode(module.dashboard.workbook_json).items :
+      length(trimspace(item.content.query)) > 0 if item.type == 3
+    ])
+    error_message = "Every query panel needs a query"
+  }
+  assert {
+    condition = length([
+      for item in jsondecode(module.dashboard.workbook_json).items : item if item.type == 3
+    ]) == 13
+    error_message = "Expected 13 query panels"
+  }
+  assert {
+    condition     = strcontains(module.dashboard.workbook_json, "drift_check")
+    error_message = "The workbook should show drift results"
   }
 }

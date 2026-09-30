@@ -1,0 +1,6 @@
+// Mean predicted daily units per forecast, by model: a step change is prediction drift.
+customMetrics
+| where name == 'dfcast_predicted_units'
+| summarize mean_units = round(sum(valueSum) / sum(valueCount), 2)
+    by bin(timestamp, {TimeRange:grain}), model_version = tostring(customDimensions.model_version)
+| order by timestamp asc

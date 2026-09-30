@@ -59,3 +59,15 @@ def test_resource_attributes_carry_the_revision(monkeypatch: pytest.MonkeyPatch)
     assert attrs["service.version"] == "ca-dfcast-prod-cin--g1234567-m3-9"
     assert attrs["service.instance.id"].startswith(attrs["service.version"])
     assert attrs["service.name"] == "dfcast-api"
+
+
+@pytest.mark.parametrize(
+    ("days", "bucket"), [(1, "1-7"), (7, "1-7"), (8, "8-30"), (30, "8-30"), (90, "31-90")]
+)
+def test_horizon_bucket(days: int, bucket: str) -> None:
+    assert telemetry.horizon_bucket(days) == bucket
+
+
+def test_record_forecast_is_safe_without_a_provider() -> None:
+    telemetry.record_forecast("test-1", 7, [1.0, 2.0])  # no-op instruments, must not raise
+    telemetry.record_forecast("test-1", 7, [])

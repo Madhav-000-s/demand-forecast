@@ -1,0 +1,6 @@
+// One point per drift job run (every 6 h); status insufficient_data means too little traffic to judge.
+customEvents
+| where name == 'drift_check'
+| extend max_psi = todouble(customMeasurements.max_psi), status = tostring(customDimensions.status)
+| project timestamp, max_psi, threshold = todouble(customDimensions.threshold), status
+| order by timestamp asc

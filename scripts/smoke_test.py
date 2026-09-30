@@ -31,6 +31,7 @@ def call(base: str, method: str, path: str, body: Any = None, timeout: float = 3
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base.rstrip("/") + path, data=data, method=method)
     req.add_header("content-type", "application/json")
+    req.add_header("x-traffic-source", "smoke")  # excluded from drift statistics
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read() or b"null"), dict(r.headers)

@@ -1,0 +1,149 @@
+name: drift
+
+# Every 6 hours: compare the features of recent requests with the served
+# model's reference distribution (PSI per feature, scripts/drift_check.py).
+# The result goes to App Insights as a `drift_check` event, which drives the
+# drift alert and the dashboard. On drift the job starts train.yml; retraining
+# then goes through the promotion gate and a canary deploy like any release.
+# A 24-hour cooldown stops a persistent shift from retraining in a loop.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: Look-back window in hours
+        type: number
+        default: 6
+      retrain:
+        description: Start train.yml if drift is found
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write # workflow_dispatch of train.yml
+
+concurrency:
+  group: drift-prod
+  cancel-in-progress: false
+
+env:
+  MODEL_NAME: dfcast-lgbm
+  TERRAFORM_VERSION: "1.16.4"
+  PSI_THRESHOLD: "0.25"
+  MIN_SAMPLES: "500"
+  RETRAIN_COOLDOWN_HOURS: "24"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      HOURS: ${{ inputs.hours || 6 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/ops.txt
+
+      - name: Install
+        run: pip install -r requirements/ops.txt
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Read infrastructure outputs
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}" >/dev/null
+          {
+            echo "RG=$(terraform output -raw resource_group)"
+            echo "AML_WS=$(terraform output -raw aml_workspace)"
+            echo "APPI_ID=$(terraform output -raw app_insights_id)"
+            echo "APPI_APP_ID=$(terraform output -raw app_insights_app_id)"
+          } >> "$GITHUB_ENV"
+
+      - name: App Insights connection string (for the drift event)
+        run: |
+          conn=$(az resource show --ids "$APPI_ID" --query properties.ConnectionString -o tsv)
+          echo "::add-mask::$conn"
+          echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$conn" >> "$GITHUB_ENV"
+
+      - name: Which model served the traffic
+        id: served
+        run: |
+          v=$(python scripts/drift_check.py served-version --appinsights-app-id "$APPI_APP_ID" --hours "$HOURS")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Model serving the last $HOURS h: \`${v:-no traffic}\`"
+
+      - name: Reference distribution of that model
+        if: steps.served.outputs.version != ''
+        env:
+          SERVED_VERSION: ${{ steps.served.outputs.version }}
+        run: |
+          az extension add -n ml -y --upgrade
+          az configure --defaults group="$RG" workspace="$AML_WS"
+          reg=$(az ml model list -n "$MODEL_NAME" \
+            --query "[?tags.model_version=='$SERVED_VERSION'].version | [0]" -o tsv)
+          if [ -z "$reg" ]; then
+            echo "::error::no registered $MODEL_NAME version is tagged model_version=$SERVED_VERSION"
+            exit 1
+          fi
+          az ml model download -n "$MODEL_NAME" -v "$reg" --download-path ref
+          cp "$(find ref -name reference_stats.json | head -1)" reference_stats.json
+          echo "Reference: $MODEL_NAME:$reg ($SERVED_VERSION)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Drift check
+        id: drift
+        env:
+          SERVED_VERSION: ${{ steps.served.outputs.version }}
+        run: |
+          args=(check --appinsights-app-id "$APPI_APP_ID" --hours "$HOURS"
+                --threshold "$PSI_THRESHOLD" --min-samples "$MIN_SAMPLES" --report drift_report.json)
+          if [ -n "$SERVED_VERSION" ]; then
+            args+=(--model-version "$SERVED_VERSION" --reference reference_stats.json)
+          fi
+          python scripts/drift_check.py "${args[@]}"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: drift-report
+          path: drift_report.json
+          if-no-files-found: ignore
+
+      - name: Retrain on drift (24 h cooldown)
+        if: steps.drift.outputs.status == 'drift' && (github.event_name == 'schedule' || inputs.retrain)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FEATURE: ${{ steps.drift.outputs.max_feature }}
+          MAX_PSI: ${{ steps.drift.outputs.max_psi }}
+        run: |
+          since=$(date -u -d "-${RETRAIN_COOLDOWN_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+          recent=$(gh run list --workflow train.yml --created ">=$since" --json databaseId --jq length)
+          if [ "$recent" -gt 0 ]; then
+            echo "**Retrain skipped:** train.yml already ran in the last ${RETRAIN_COOLDOWN_HOURS} h (cooldown)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run train.yml --ref main -f reason="drift: $FEATURE PSI $MAX_PSI" -f deploy=true
+          echo "**Retraining started:** train.yml (reason: drift on $FEATURE, PSI $MAX_PSI)." >> "$GITHUB_STEP_SUMMARY"

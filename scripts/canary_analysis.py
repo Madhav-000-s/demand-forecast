@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 
 @dataclass
@@ -72,20 +73,33 @@ def query_stats(app_id: str, revision: str, lookback_min: int) -> Stats:
     return Stats(int(n), int(errors or 0), float(p95 or 0.0))
 
 
+WINDOW_START = date(2018, 1, 1)  # day after the data ends
+WINDOW_DAYS = 91  # every forecast date must fall inside these 91 days
+
+
+def request_body(rng: random.Random) -> dict:
+    """A request shaped like real use: any series, any start date in the window."""
+    horizon = rng.choice([7, 14, 30, 90])
+    start = WINDOW_START + timedelta(days=rng.randint(0, WINDOW_DAYS - horizon))
+    return {
+        "store": rng.randint(1, 10),
+        "item": rng.randint(1, 50),
+        "start_date": start.isoformat(),
+        "horizon_days": horizon,
+    }
+
+
 def traffic(app_url: str, stop: threading.Event, rps: float) -> None:
-    """Send forecast requests to the public URL until stopped."""
+    """Send forecast requests to the public URL until stopped.
+
+    Requests carry X-Traffic-Source: canary so the drift job leaves them out.
+    """
     rng = random.Random()
     while not stop.is_set():
-        body = {
-            "store": rng.randint(1, 10),
-            "item": rng.randint(1, 50),
-            "start_date": "2018-01-01",
-            "horizon_days": rng.choice([7, 14, 30, 90]),
-        }
         req = urllib.request.Request(
             app_url.rstrip("/") + "/v1/forecast",
-            data=json.dumps(body).encode(),
-            headers={"content-type": "application/json"},
+            data=json.dumps(request_body(rng)).encode(),
+            headers={"content-type": "application/json", "x-traffic-source": "canary"},
             method="POST",
         )
         # errors are measured server-side from App Insights, not here
