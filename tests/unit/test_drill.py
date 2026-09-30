@@ -217,3 +217,62 @@ def test_k6_summary_conversion(drill: ModuleType, tmp_path: Path) -> None:
     stats = json.loads((tmp_path / "o.json").read_text())
     assert stats["sent"] == 2000 and stats["failed"] == 10 and stats["client_p95_ms"] == 301.3
     assert stats["max_vus"] == 100 and stats["rps"] == 6.7
+
+
+def test_report_renders_timeline_and_replica_starts(
+    drill: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        drill.appinsights,
+        "timeline",
+        lambda *_a: [
+            {
+                "minute": "2026-09-30T17:11:00Z",
+                "requests": 900,
+                "errors": 0,
+                "p50": 480.2,
+                "p95": 1348.0,
+                "replicas": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        drill.appinsights,
+        "replica_starts",
+        lambda *_a: [
+            {"timestamp": "2026-09-30T17:10:58Z", "replica": "r-1", "revision": "rev", "load_seconds": 3.2}
+        ],
+    )
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    text = drill.report("app", start, start + timedelta(minutes=10))
+    assert "| 17:11 | 900 | 0 | 480.2 | 1348.0 | 1 |" in text
+    assert "| 17:10:58 | r-1 | 3.2 |" in text
+
+
+def test_timeline_parsing(ai: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ai, "query", lambda *_a: [["2026-09-30T17:11:00Z", 900, 2, 480.24, 1348.04, 2]])
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    rows = ai.timeline("app", start, start + timedelta(minutes=10))
+    assert rows == [
+        {
+            "minute": "2026-09-30T17:11:00Z",
+            "requests": 900,
+            "errors": 2,
+            "p50": 480.2,
+            "p95": 1348.0,
+            "replicas": 2,
+        }
+    ]
+
+
+def test_record_uses_the_requested_sources(drill: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+
+    def fake(_app: str, _s: datetime, _e: datetime, sources: list[str] | None = None) -> dict:
+        seen.append(sources)
+        return {"requests": 1, "errors": 0, "replicas": 1}
+
+    monkeypatch.setattr(drill.appinsights, "window_stats", fake)
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    drill.record("load", start, start, "app", None, "e", "o", True, sources=["load"])
+    assert seen == [["load"], None]
