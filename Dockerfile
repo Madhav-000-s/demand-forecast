@@ -1,5 +1,5 @@
 # ---- build stage: install dependencies into a virtualenv ----
-FROM python:3.11-slim AS build
+FROM python:3.14-slim AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -10,7 +10,7 @@ RUN pip install -r /tmp/requirements.txt \
     && pip uninstall -y setuptools wheel pip
 
 # ---- runtime stage ----
-FROM python:3.11-slim
+FROM python:3.14-slim
 # LightGBM needs the OpenMP runtime. `upgrade` pulls Debian security fixes
 # published after the base image was built (Trivy fails the build otherwise).
 RUN apt-get update \
