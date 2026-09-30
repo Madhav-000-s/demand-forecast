@@ -32,6 +32,17 @@ resource "azurerm_container_app_environment" "this" {
   log_analytics_workspace_id = var.log_analytics_workspace_id
   logs_destination           = "log-analytics"
   tags                       = var.tags
+
+  # A workload-profiles environment is always a *standard* environment. Without
+  # a profile, Azure may create an "express" environment, which does not support
+  # multiple revisions, traffic splitting, labels, managed-identity image pulls,
+  # Key Vault references or probes - all needed for canary releases.
+  # The Consumption profile is serverless (scale to zero, no base fee).
+  # Profiles cannot be added later; changing this recreates the environment.
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "azurerm_container_app" "this" {
@@ -39,6 +50,7 @@ resource "azurerm_container_app" "this" {
   container_app_environment_id = azurerm_container_app_environment.this.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Multiple" # canary deploys split traffic between revisions
+  workload_profile_name        = "Consumption"
   max_inactive_revisions       = 10
   tags                         = var.tags
 
