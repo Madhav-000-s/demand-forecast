@@ -16,3 +16,9 @@ Insights > Workbooks > "dfcast: SLOs, canaries and drift").
 
 Each query is a file in `queries/`; paste one into App Insights > Logs to run
 it on its own (replace `{TimeRange:grain}` with e.g. `5m`).
+
+**Sampling.** The Azure Monitor OpenTelemetry distro samples request traces
+(rate-limited, about 5 per second by default). Stored requests carry
+`itemCount`, the number of requests each one stands for, so every count over
+`requests` uses `sum(itemCount)`; `count()` would undercount under load. Logs
+(`traces`) are not sampled.

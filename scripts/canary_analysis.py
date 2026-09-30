@@ -48,7 +48,8 @@ requests
 | where timestamp > ago({lookback}m)
 | where application_Version == '{revision}'
 | where name has '/v1/'
-| summarize n = count(), errors = countif(toint(resultCode) >= 500), p95 = percentile(duration, 95)
+| summarize n = sum(itemCount), errors = sumif(itemCount, toint(resultCode) >= 500),
+            p95 = percentile(duration, 95)
 """
 
 

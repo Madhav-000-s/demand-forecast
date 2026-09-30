@@ -4,7 +4,8 @@ let burn = (w: timespan, label: string) {
     requests
     | where timestamp > ago(w)
     | where name has '/v1/'
-    | summarize n = count(), errors = countif(toint(resultCode) >= 500), slow = countif(duration >= 300)
+    | summarize n = sum(itemCount), errors = sumif(itemCount, toint(resultCode) >= 500),
+                slow = sumif(itemCount, duration >= 300)
     | extend window = label,
              availability_burn = iff(n == 0, real(null), round((1.0 * errors / n) / 0.005, 2)),
              latency_burn = iff(n == 0, real(null), round((1.0 * slow / n) / 0.01, 2))

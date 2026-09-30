@@ -22,7 +22,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "latency" {
   criteria {
     query                   = <<-KQL
       ${local.api_requests}
-      | summarize p95 = percentile(duration, 95), n = count()
+      | summarize p95 = percentile(duration, 95), n = sum(itemCount)
       | where n >= ${var.min_requests}
       | project p95
     KQL
@@ -59,7 +59,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "errors" {
   criteria {
     query                   = <<-KQL
       ${local.api_requests}
-      | summarize n = count(), errors = countif(toint(resultCode) >= 500)
+      | summarize n = sum(itemCount), errors = sumif(itemCount, toint(resultCode) >= 500)
       | where n >= ${var.min_requests}
       | project error_rate_pct = 100.0 * errors / n
     KQL
