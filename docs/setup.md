@@ -84,6 +84,22 @@ that image) and the SLO alerts. The app URL is in the run summary.
 - Infra change: merge a PR touching `infra/`, and `infra` applies it. PRs show
   the plan as a comment.
 
+## 8. Monitoring and drift (automatic)
+
+- **Dashboard:** Azure portal > Application Insights `appi-dfcast-prod-cin` >
+  Workbooks > "dfcast: SLOs, canaries and drift". Created by Terraform.
+- **Drift job:** `drift` runs every 6 hours on its own (GitHub runs scheduled
+  workflows from `main`). Run it on demand with
+  `gh workflow run drift.yml -f hours=6 -f retrain=false`. With too little
+  traffic it reports `insufficient_data`, which is normal for a demo service.
+- **Drift alert:** emails when the drift job reports drift; see
+  [runbooks/drift.md](runbooks/drift.md).
+
+The first model trained before milestone 5 has a drift reference over the
+training years, not the forecast window, and logs features in a format the
+drift job does not read. Retrain once after merging milestone 5
+(`gh workflow run train.yml -f reason="forecast-window drift reference"`).
+
 ## Local Terraform (optional)
 
 ```bash
