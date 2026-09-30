@@ -1,0 +1,11 @@
+// SLOs over the last 28 days: 99.5% of /v1 requests non-5xx, 99% under 300 ms.
+// Budget remaining = share of the allowed bad requests not yet used.
+requests
+| where timestamp > ago(28d)
+| where name has '/v1/'
+| summarize total = count(), errors = countif(toint(resultCode) >= 500), slow = countif(duration >= 300)
+| extend availability_pct = round(100.0 * (total - errors) / total, 3),
+         latency_sli_pct = round(100.0 * (total - slow) / total, 3)
+| extend availability_budget_left_pct = round(100.0 * (1 - (1.0 * errors / total) / 0.005), 1),
+         latency_budget_left_pct = round(100.0 * (1 - (1.0 * slow / total) / 0.01), 1)
+| project total, availability_pct, availability_budget_left_pct, latency_sli_pct, latency_budget_left_pct

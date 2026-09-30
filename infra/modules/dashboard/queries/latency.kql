@@ -1,0 +1,6 @@
+requests
+| where name has '/v1/'
+| summarize p50 = percentile(duration, 50), p95 = percentile(duration, 95), p99 = percentile(duration, 99)
+    by bin(timestamp, {TimeRange:grain})
+| extend slo_ms = 300.0
+| order by timestamp asc

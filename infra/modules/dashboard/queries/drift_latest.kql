@@ -1,0 +1,11 @@
+// PSI per monitored feature in the most recent drift check.
+customEvents
+| where name == 'drift_check'
+| top 1 by timestamp desc
+| extend status = tostring(customDimensions.status), samples = toint(customMeasurements.samples),
+         model_version = tostring(customDimensions.model_version)
+| mv-expand bagexpansion=array customMeasurements
+| extend key = tostring(customMeasurements[0]), psi = round(todouble(customMeasurements[1]), 3)
+| where key startswith 'psi_'
+| project feature = substring(key, 4), psi, status, samples, model_version, checked = timestamp
+| order by psi desc

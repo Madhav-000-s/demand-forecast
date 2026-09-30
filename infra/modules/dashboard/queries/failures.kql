@@ -1,0 +1,5 @@
+requests
+| where name has '/v1/' and toint(resultCode) >= 500
+| project timestamp, name, resultCode, duration, revision = application_Version, operation_Id
+| order by timestamp desc
+| take 50

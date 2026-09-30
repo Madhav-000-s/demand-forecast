@@ -77,3 +77,9 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "enable_drift_alert" {
+  type        = bool
+  default     = true
+  description = "Alert on drift_check events from the drift workflow (needs only App Insights)."
+}

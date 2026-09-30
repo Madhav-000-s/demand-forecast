@@ -1,0 +1,8 @@
+// Every replica start loads the model; with scale-to-zero these are cold starts.
+traces
+| where message == 'model loaded'
+| project timestamp, replica = cloud_RoleInstance, revision = application_Version,
+          model_version = tostring(customDimensions.model_version),
+          load_seconds = todouble(customDimensions.model_load_seconds)
+| order by timestamp desc
+| take 50

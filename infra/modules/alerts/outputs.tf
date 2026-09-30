@@ -6,3 +6,7 @@ output "alert_ids" {
     azurerm_monitor_metric_alert.availability[*].id,
   )
 }
+
+output "drift_alert_id" {
+  value = try(azurerm_monitor_scheduled_query_rules_alert_v2.drift[0].id, null)
+}

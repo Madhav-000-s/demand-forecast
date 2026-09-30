@@ -1,0 +1,5 @@
+// Canary splits show up as two revisions sharing traffic.
+requests
+| where name has '/v1/'
+| summarize requests = count() by bin(timestamp, {TimeRange:grain}), revision = application_Version
+| order by timestamp asc

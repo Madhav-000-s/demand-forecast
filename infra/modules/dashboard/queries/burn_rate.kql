@@ -1,0 +1,13 @@
+// Error-budget burn rate per window (1.0 = spending exactly the 28-day budget).
+// Fast burn (1 h > 14.4) or slow burn (6 h > 6) is the usual paging threshold.
+let burn = (w: timespan, label: string) {
+    requests
+    | where timestamp > ago(w)
+    | where name has '/v1/'
+    | summarize n = count(), errors = countif(toint(resultCode) >= 500), slow = countif(duration >= 300)
+    | extend window = label,
+             availability_burn = iff(n == 0, real(null), round((1.0 * errors / n) / 0.005, 2)),
+             latency_burn = iff(n == 0, real(null), round((1.0 * slow / n) / 0.01, 2))
+};
+union burn(1h, "1h"), burn(6h, "6h"), burn(1d, "24h"), burn(3d, "3d")
+| project window, requests = n, availability_burn, latency_burn
