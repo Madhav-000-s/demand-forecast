@@ -89,8 +89,8 @@ requests
 | where timestamp between (datetime({start}) .. datetime({end}))
 | where name has '/v1/'
 {source_filter}
-| summarize requests = count(),
-            errors = countif(toint(resultCode) >= 500),
+| summarize requests = sum(itemCount),
+            errors = sumif(itemCount, toint(resultCode) >= 500),
             p50 = percentile(duration, 50), p95 = percentile(duration, 95),
             p99 = percentile(duration, 99), max_ms = max(duration),
             replicas = dcount(cloud_RoleInstance),
