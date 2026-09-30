@@ -12,7 +12,9 @@ Outputs (all in --out):
     model.txt             LightGBM model
     metadata.json         version, git SHA, dataset hash, params, metrics
     metrics.json          test metrics for the model and baselines
-    reference_stats.json  per-feature histograms for the drift job
+    reference_stats.json  per-feature histograms for the drift job, computed over the
+                          forecast window the model serves (every series x the 91
+                          days after the data ends), which is what requests look like
     canary_reference.json fixed requests + expected outputs for post-deploy smoke tests
     history.npz           recent sales per series, used by the API for features
 """
@@ -212,6 +214,22 @@ def save_history(panel: data_mod.Panel, path: Path, days: int = HISTORY_DAYS) ->
     )
 
 
+def serving_features(panel: data_mod.Panel, days: int = HISTORY_DAYS) -> np.ndarray:
+    """Feature rows for every series on every day of the forecast window.
+
+    The drift reference is built from these rather than from the training
+    rows: training covers 2013-2017, but a deployed model is only asked about
+    the 91 days after its data ends, when sales levels (and so the lag
+    features) sit well above the multi-year average. Comparing live requests
+    against the training rows would report drift on perfectly normal traffic.
+    """
+    recent = panel.slice_days(panel.end - timedelta(days=days - 1), panel.end)
+    n_time = recent.values.shape[1]
+    return build_matrix(
+        recent.values, recent.start, recent.stores, recent.items, np.arange(n_time, n_time + MIN_LAG)
+    )
+
+
 def run(
     data_path: Path,
     out: Path,
@@ -224,14 +242,14 @@ def run(
     panel = data_mod.to_panel(data_mod.load_csv(data_path))
     log.info("panel: %d series, %s..%s", panel.values.shape[0], panel.start, panel.end)
 
-    booster, metrics, x_full = train(panel, splits, params, max_rounds=max_rounds)
+    booster, metrics, _ = train(panel, splits, params, max_rounds=max_rounds)
     sha = git_sha()
     now = datetime.now(timezone.utc)
     version = model_version or f"{now:%Y%m%d.%H%M}-{sha[:7]}"
 
     booster.save_model(str(out / "model.txt"))
     save_history(panel, out / "history.npz")
-    stats = reference_stats(x_full, FEATURE_NAMES, CATEGORICAL_FEATURES)
+    stats = reference_stats(serving_features(panel), FEATURE_NAMES, CATEGORICAL_FEATURES)
     (out / "reference_stats.json").write_text(json.dumps(stats, indent=2))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
     reference = canary.build_reference(booster, panel)
@@ -244,6 +262,11 @@ def run(
         "data_range": {"first": panel.start.isoformat(), "last": panel.end.isoformat()},
         "splits": {"train_end": splits.train_end.isoformat(), "val_end": splits.val_end.isoformat()},
         "feature_names": FEATURE_NAMES,
+        "drift_reference": {
+            "basis": "forecast_window",
+            "first": (panel.end + timedelta(days=1)).isoformat(),
+            "last": (panel.end + timedelta(days=MIN_LAG)).isoformat(),
+        },
         "target_transform": "log1p",
         "params": {**DEFAULT_PARAMS, **params},
         "num_trees": booster.num_trees(),

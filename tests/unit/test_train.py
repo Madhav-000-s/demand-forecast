@@ -38,3 +38,31 @@ def test_history_and_reference_stats(artifacts: Path) -> None:
     assert set(stats) == set(FEATURE_NAMES)
     for entry in stats.values():
         assert abs(sum(entry["proportions"]) - 1) < 1e-3
+
+
+def test_drift_reference_describes_the_forecast_window(artifacts: Path) -> None:
+    """The reference must match what the API computes for requests in the window
+    it serves, so normal traffic is not reported as drift."""
+    from datetime import date
+
+    from app.model import ForecastModel
+    from ml.drift_stats import feature_psi
+
+    meta = json.loads((artifacts / "metadata.json").read_text())
+    assert meta["drift_reference"] == {
+        "basis": "forecast_window",
+        "first": "2018-01-01",
+        "last": "2018-04-01",
+    }
+
+    model = ForecastModel.load(artifacts)
+    stats = json.loads((artifacts / "reference_stats.json").read_text())
+    rng = np.random.default_rng(0)
+    rows = []
+    for _ in range(600):
+        store, item = list(model.index)[rng.integers(len(model.index))]
+        start = date(2018, 1, 1) + np.timedelta64(int(rng.integers(0, 91)), "D").item()
+        rows.append(model.features(store, item, start, 1)[0])
+    x = np.array(rows)
+    for j, name in enumerate(FEATURE_NAMES):
+        assert feature_psi(stats[name], x[:, j]) < 0.1, name
