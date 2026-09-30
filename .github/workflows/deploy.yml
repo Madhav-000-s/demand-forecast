@@ -215,9 +215,12 @@ jobs:
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '{revision:$rev, model:$model, commit:$sha, run:$run}')
           label="canary"; if [ "$DRILL" != none ]; then label="drill $DRILL"; fi
-          body=$(jq -cn --arg name "$label $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$props" \
-            '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:$p}]')
-          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" --body "$body" -o none
+          # One annotation object with an Id (an array, or no Id, gets "Value cannot be null")
+          body=$(jq -cn --arg id "$(cat /proc/sys/kernel/random/uuid)" --arg name "$label $CANARY" \
+            --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$props" \
+            '{Id:$id, AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:$p}')
+          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" \
+            --headers Content-Type=application/json --body "$body" -o none
 
       - name: Shift ${{ env.CANARY_PERCENT }}% of traffic to the canary
         if: env.APP != '' && steps.smoke.outcome == 'success'
@@ -252,9 +255,11 @@ jobs:
           az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$CANARY" -o none || true
           echo "ROLLED_BACK=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           echo "**Rolled back**: 100% on \`$STABLE\`, \`$CANARY\` deactivated." >> "$GITHUB_STEP_SUMMARY"
-          body=$(jq -cn --arg name "rollback $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:"{}"}]')
-          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" --body "$body" -o none || true
+          body=$(jq -cn --arg id "$(cat /proc/sys/kernel/random/uuid)" --arg name "rollback $CANARY" \
+            --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{Id:$id, AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:"{}"}')
+          az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" \
+            --headers Content-Type=application/json --body "$body" -o none || true
 
       - name: Restore traffic if the canary was never created
         if: failure() && steps.stable.outcome == 'success' && steps.canary.outcome != 'success'
