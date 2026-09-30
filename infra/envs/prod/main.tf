@@ -81,6 +81,15 @@ module "container_app" {
   appinsights_secret_id     = module.keyvault.secret_ids["appinsights-connection-string"]
   image                     = var.app_image
   min_replicas              = var.min_replicas
+  # Sized from the load drill (2026-09-30, docs/postmortems): one 0.5 vCPU
+  # replica saturated at ~40 req/s (p95 16 ms -> 1.4 s) and the 50-request
+  # concurrency rule added a second replica ~75 s later. One core per replica
+  # matches the single uvicorn worker; scaling at 10 in-flight requests adds
+  # replicas before the queue builds.
+  cpu                       = 1.0
+  memory                    = "2Gi"
+  max_replicas              = 5
+  scale_concurrent_requests = 10
   tags                      = local.tags
 }
 

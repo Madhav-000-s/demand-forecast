@@ -151,6 +151,10 @@ run "app_and_alerts_with_an_image" {
     error_message = "Unexpected app name"
   }
   assert {
+    condition     = module.container_app[0].scaling.cpu == 1.0 && module.container_app[0].scaling.scale_concurrent_requests <= 10
+    error_message = "Replicas below 1 vCPU or a scale rule above 10 in-flight requests failed the load drill (docs/postmortems)"
+  }
+  assert {
     condition     = module.container_app[0].environment_mode_requested == "WorkloadProfiles"
     error_message = "The environment must request WorkloadProfiles mode (express lacks revisions and traffic splitting)"
   }
