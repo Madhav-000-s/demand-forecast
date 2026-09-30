@@ -1,0 +1,8 @@
+// Chaos drills (drill workflow): what was expected, what happened, and the numbers.
+customEvents
+| where name == 'drill'
+| project timestamp, drill = tostring(customDimensions.drill), passed = tostring(customDimensions.passed),
+          expected = tostring(customDimensions.expected), outcome = tostring(customDimensions.outcome),
+          duration_s = todouble(customMeasurements.duration_s), run = tostring(customDimensions.run_url)
+| order by timestamp desc
+| take 50

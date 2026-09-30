@@ -198,8 +198,8 @@ run "dashboard_workbook" {
   assert {
     condition = length([
       for item in jsondecode(module.dashboard.workbook_json).items : item if item.type == 3
-    ]) == 13
-    error_message = "Expected 13 query panels"
+    ]) == 14
+    error_message = "Expected 14 query panels"
   }
   assert {
     condition     = strcontains(module.dashboard.workbook_json, "drift_check")

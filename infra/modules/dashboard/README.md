@@ -11,6 +11,7 @@ Insights > Workbooks > "dfcast: SLOs, canaries and drift").
 | Traffic by revision (canary splits) and by source | `requests`, `traces` |
 | Mean predicted units by model, horizon mix | `customMetrics` (OpenTelemetry) |
 | Drift history, PSI per feature, drift job runs | `customEvents` (`drift_check`) |
+| Chaos drills: expectation, outcome, duration | `customEvents` (`drill`) |
 | Replica starts with model load time, recent 5xx | `traces`, `requests` |
 
 Each query is a file in `queries/`; paste one into App Insights > Logs to run

@@ -143,6 +143,16 @@ requests the job reports `insufficient_data` instead of guessing. On drift it
 raises an Azure alert and starts `train.yml`, so a retrained model goes
 through the gate and a canary like any other release.
 
+### Chaos drills
+
+`drill.yml` breaks production on purpose to prove the safety nets:
+a release with plausible-but-wrong forecasts (`bad-model`), a release that is
+400 ms slower (`slow-release`), skewed traffic (`drift`), a k6 load spike
+(`load`) and a revision restart under traffic (`restart`). Each drill has a
+written expectation and records its measured result in App Insights; see
+[docs/drills.md](docs/drills.md) and the postmortems in
+[docs/postmortems](docs/postmortems).
+
 ### Canary safety checks
 
 Training writes `canary_reference.json`: 20 fixed requests with the predictions
@@ -159,7 +169,7 @@ stopped here, not by users.
 app/              FastAPI service, model loading, JSON logs, OpenTelemetry
 ml/               features (shared with the API), training, metrics, promotion gate,
                   drift statistics, canary reference; ml/aml/ = Azure ML job spec
-scripts/          post-deploy smoke test, canary analysis, drift check
+scripts/          smoke test, canary analysis, drift check, drill toolkit, k6 load script
 tests/            unit and API contract tests (synthetic data)
 infra/bootstrap/  one-time script: providers, state storage, GitHub OIDC identity
 infra/modules/    observability, registry, keyvault, container_app, alerts, azureml, dashboard
