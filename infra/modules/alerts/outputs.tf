@@ -10,3 +10,8 @@ output "alert_ids" {
 output "drift_alert_id" {
   value = try(azurerm_monitor_scheduled_query_rules_alert_v2.drift[0].id, null)
 }
+
+output "drift_alert_enabled" {
+  description = "Known at plan time (unlike the id), for tests."
+  value       = length(azurerm_monitor_scheduled_query_rules_alert_v2.drift) == 1
+}

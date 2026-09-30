@@ -130,7 +130,7 @@ run "first_apply_without_an_image" {
     error_message = "container_app_name should be null before the app exists"
   }
   assert {
-    condition     = length(module.alerts.drift_alert_id[*]) == 1
+    condition     = module.alerts.drift_alert_enabled
     error_message = "The drift alert only needs App Insights, so it exists before the app"
   }
 }
@@ -178,7 +178,7 @@ run "global_names_fit_azure_limits" {
 }
 
 run "dashboard_workbook" {
-  command = plan
+  command = apply # mocked: the workbook JSON embeds the App Insights id, known only after apply
 
   variables {
     app_image = ""
