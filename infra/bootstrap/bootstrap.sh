@@ -97,9 +97,30 @@ federate() { # name subject
     echo "  = $2 (exists)"
   fi
 }
-federate github-main "repo:${GITHUB_REPO}:ref:refs/heads/main"
-federate github-pr "repo:${GITHUB_REPO}:pull_request"
-federate github-env-production "repo:${GITHUB_REPO}:environment:production"
+# GitHub now presents subjects with immutable IDs
+# (repo:<owner>@<owner-id>/<repo>@<repo-id>:...); register that form, plus the
+# legacy name-only form for repos that still use it.
+OWNER="${GITHUB_REPO%%/*}"
+REPO_NAME="${GITHUB_REPO##*/}"
+if [[ -z "${GITHUB_OWNER_ID:-}" || -z "${GITHUB_REPO_ID:-}" ]]; then
+  if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    GITHUB_OWNER_ID=$(gh api "repos/${GITHUB_REPO}" --jq .owner.id)
+    GITHUB_REPO_ID=$(gh api "repos/${GITHUB_REPO}" --jq .id)
+  else
+    echo "  set GITHUB_OWNER_ID and GITHUB_REPO_ID (or log in with gh) for ID-based subjects" >&2
+  fi
+fi
+SUBJECT_PREFIXES=("repo:${GITHUB_REPO}")
+if [[ -n "${GITHUB_OWNER_ID:-}" && -n "${GITHUB_REPO_ID:-}" ]]; then
+  SUBJECT_PREFIXES+=("repo:${OWNER}@${GITHUB_OWNER_ID}/${REPO_NAME}@${GITHUB_REPO_ID}")
+fi
+for i in "${!SUBJECT_PREFIXES[@]}"; do
+  prefix="${SUBJECT_PREFIXES[$i]}"
+  tag=$([[ $i -eq 0 ]] && echo "" || echo "-ids")
+  federate "github-main${tag}" "${prefix}:ref:refs/heads/main"
+  federate "github-pr${tag}" "${prefix}:pull_request"
+  federate "github-env-production${tag}" "${prefix}:environment:production"
+done
 
 log "Role assignments for $IDENTITY"
 sleep 20 # a new identity's service principal takes a moment to appear
