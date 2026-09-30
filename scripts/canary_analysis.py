@@ -116,6 +116,16 @@ def summary(line: str) -> None:
             f.write(line + "\n")
 
 
+def outputs(s: Stats, verdict: str | None) -> None:
+    """Step outputs for the drill verdict in deploy.yml."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"requests={s.requests}\nerror_rate={s.error_rate:.4f}\np95_ms={s.p95_ms:.0f}\n")
+        f.write(f"verdict={verdict or 'promote'}\n")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--app-url", required=True)
@@ -166,6 +176,7 @@ def main() -> int:
         elif s.p95_ms > a.max_p95_ms:
             verdict = f"p95 {s.p95_ms:.0f} ms above {a.max_p95_ms:.0f} ms"
 
+    outputs(s, verdict)  # s = the latest stats, whichever branch ended the analysis
     if verdict:
         summary(f"\n**Roll back:** {verdict}")
         return 1

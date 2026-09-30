@@ -20,6 +20,24 @@ on:
         description: Start train.yml if drift is found
         type: boolean
         default: true
+  workflow_call: # from drill.yml (drift drill)
+    inputs:
+      hours:
+        type: number
+        default: 6
+      retrain:
+        type: boolean
+        default: false
+    outputs:
+      status:
+        description: ok | drift | insufficient_data
+        value: ${{ jobs.check.outputs.status }}
+      max_psi:
+        value: ${{ jobs.check.outputs.max_psi }}
+      max_feature:
+        value: ${{ jobs.check.outputs.max_feature }}
+      samples:
+        value: ${{ jobs.check.outputs.samples }}
 
 permissions:
   contents: read
@@ -41,6 +59,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      status: ${{ steps.drift.outputs.status }}
+      max_psi: ${{ steps.drift.outputs.max_psi }}
+      max_feature: ${{ steps.drift.outputs.max_feature }}
+      samples: ${{ steps.drift.outputs.samples }}
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}

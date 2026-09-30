@@ -11,8 +11,10 @@ RUN pip install -r /tmp/requirements.txt \
 
 # ---- runtime stage ----
 FROM python:3.11-slim
-# LightGBM needs the OpenMP runtime
+# LightGBM needs the OpenMP runtime. `upgrade` pulls Debian security fixes
+# published after the base image was built (Trivy fails the build otherwise).
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall -y setuptools wheel pip \

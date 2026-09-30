@@ -1,0 +1,260 @@
+name: drill
+
+# Chaos drills against production. Each one has a written expectation and ends
+# with a `drill` event in App Insights (workbook: "Drills") plus a run summary
+# with client- and server-side numbers. Postmortems quote these, never guesses.
+#
+#   bad-model     release a model that answers 200 with forecasts ~30% off
+#                 -> smoke test must reject it before any traffic shift
+#   slow-release  release a build that adds 400 ms per request
+#                 -> canary analysis must see p95 > 300 ms and roll back
+#   drift         send 800 skewed requests (stores 1-2, items 1-5)
+#                 -> drift job must report drift (alert fires; retrain optional)
+#   load          k6: 20 virtual users, then a spike to 100
+#                 -> server p95 stays under 300 ms, < 1% errors, replicas scale out
+#   restart       restart the serving revision under steady traffic
+#                 -> < 1% of requests fail while replicas come back
+#
+# Drill traffic carries X-Traffic-Source: drill (or load); release drills run
+# the real deploy.yml path with a fault baked into the image and are never
+# promoted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: Which drill
+        type: choice
+        options: [bad-model, slow-release, drift, load, restart]
+      retrain:
+        description: "drift only: let the drift job start train.yml (24 h cooldown applies)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write
+
+concurrency:
+  group: drill-prod
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.16.4"
+  K6_IMAGE: grafana/k6:2.3.0
+
+jobs:
+  # --- release drills: the real deploy path with a faulty image --------------
+  release:
+    if: inputs.drill == 'bad-model' || inputs.drill == 'slow-release'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      drill: ${{ inputs.drill }}
+    secrets: inherit
+
+  # --- traffic drills ----------------------------------------------------------
+  traffic:
+    if: inputs.drill == 'drift' || inputs.drill == 'load' || inputs.drill == 'restart'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    outputs:
+      start: ${{ steps.window.outputs.start }}
+      appi_id: ${{ steps.infra.outputs.appi_id }}
+      appi_app_id: ${{ steps.infra.outputs.appi_app_id }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      DRILL: ${{ inputs.drill }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/ops.txt
+
+      - name: Install
+        run: pip install -r requirements/ops.txt
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Read infrastructure outputs
+        id: infra
+        working-directory: infra/envs/prod
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_ACCOUNT }}" >/dev/null
+          {
+            echo "RG=$(terraform output -raw resource_group)"
+            echo "APP=$(terraform output -raw container_app_name)"
+            echo "APP_URL=$(terraform output -raw app_url)"
+            echo "APPI_ID=$(terraform output -raw app_insights_id)"
+            echo "APPI_APP_ID=$(terraform output -raw app_insights_app_id)"
+          } >> "$GITHUB_ENV"
+          {
+            echo "appi_id=$(terraform output -raw app_insights_id)"
+            echo "appi_app_id=$(terraform output -raw app_insights_app_id)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: App Insights connection string (for the drill record)
+        run: |
+          conn=$(az resource show --ids "$APPI_ID" --query properties.ConnectionString -o tsv)
+          echo "::add-mask::$conn"
+          echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$conn" >> "$GITHUB_ENV"
+
+      - name: Start of the drill window
+        id: window
+        run: |
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "START=$now" >> "$GITHUB_ENV"
+          echo "start=$now" >> "$GITHUB_OUTPUT"
+          echo "Drill \`$DRILL\` started $now against $APP_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      # drift: skewed traffic now, the drift job judges it in the next job
+      - name: "drift: 800 skewed requests"
+        if: env.DRILL == 'drift'
+        run: |
+          python scripts/drill.py traffic --app-url "$APP_URL" --profile skewed --requests 800 \
+            --workers 8 --out client.json
+
+      - name: "drift: wait for telemetry ingestion"
+        if: env.DRILL == 'drift'
+        run: sleep 240
+
+      # load: k6 in its official container
+      - name: "load: k6 (20 VUs, spike to 100)"
+        if: env.DRILL == 'load'
+        continue-on-error: true # threshold breaches are drill findings, recorded below
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/scripts/k6:/scripts" -w /scripts \
+            -e BASE_URL="$APP_URL" "$K6_IMAGE" run load.js
+          python scripts/drill.py k6-stats scripts/k6/k6-summary.json --out client.json
+
+      # restart: steady traffic, restart the serving revision after a minute
+      - name: "restart: steady traffic + revision restart"
+        if: env.DRILL == 'restart'
+        run: |
+          python scripts/drill.py traffic --app-url "$APP_URL" --profile normal --duration 300 \
+            --workers 4 --rps 5 --out client.json &
+          traffic=$!
+          sleep 60
+          rev=$(az containerapp revision list -n "$APP" -g "$RG" \
+            --query "sort_by([?properties.active && properties.trafficWeight > \`0\`], &properties.trafficWeight)[-1].name" -o tsv)
+          echo "RESTARTED_REVISION=$rev" >> "$GITHUB_ENV"
+          echo "restart $rev at $(date -u +%H:%M:%S)"
+          az containerapp revision restart -n "$APP" -g "$RG" --revision "$rev" -o none
+          wait "$traffic"
+
+      - name: "load/restart: wait for telemetry, then record"
+        if: env.DRILL == 'load' || env.DRILL == 'restart'
+        run: |
+          end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export END="$end"
+          sleep 180
+          if [ "$DRILL" = load ]; then
+            expected="server p95 < 300 ms and < 1% errors at 100 VUs; replicas scale out"
+            verdict=$(python - <<'PY'
+          import json, os, subprocess, sys
+          sys.path.insert(0, "scripts")
+          import appinsights
+          from datetime import datetime
+          p = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+          s = appinsights.window_stats(os.environ["APPI_APP_ID"], p(os.environ["START"]), p(os.environ["END"]), ["load"])
+          c = json.load(open("client.json"))
+          err = (s["errors"] + c["failed"]) / max(c["sent"], 1)
+          ok = s["p95"] < 300 and err < 0.01
+          print(f"{'true' if ok else 'false'}|server p95 {s['p95']} ms, p99 {s['p99']} ms over {s['requests']} requests, "
+                f"{s['errors']} server 5xx, {c['failed']} client failures, {s['replicas']} replicas; "
+                f"client p95 {c['client_p95_ms']} ms at {c['rps']} rps")
+          PY
+            )
+          else
+            expected="< 1% of requests fail while the revision restarts"
+            verdict=$(python - <<'PY'
+          import json
+          c = json.load(open("client.json"))
+          bad = c["server_errors"] + c["failed"]
+          rate = bad / max(c["sent"], 1)
+          print(f"{'true' if rate < 0.01 else 'false'}|{bad} of {c['sent']} requests failed ({rate:.2%}); "
+                f"client p95 {c['client_p95_ms']} ms, max {c['client_max_ms']} ms")
+          PY
+            )
+          fi
+          python scripts/drill.py record --name "$DRILL" --start "$START" --end "$end" \
+            --appinsights-app-id "$APPI_APP_ID" --client-stats client.json \
+            --expected "$expected" --outcome "${verdict#*|}" --passed "${verdict%%|*}" \
+            --extra "revision=${RESTARTED_REVISION:-}" --out drill.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: drill-${{ inputs.drill }}
+          path: |
+            client.json
+            drill.json
+            scripts/k6/k6-summary.json
+          if-no-files-found: ignore
+
+  drift-check:
+    needs: traffic
+    if: inputs.drill == 'drift'
+    uses: ./.github/workflows/drift.yml
+    with:
+      hours: 1
+      retrain: ${{ inputs.retrain }}
+    secrets: inherit
+
+  drift-record:
+    needs: [traffic, drift-check]
+    if: always() && inputs.drill == 'drift' && needs.traffic.result == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      STATUS: ${{ needs.drift-check.outputs.status }}
+      MAX_PSI: ${{ needs.drift-check.outputs.max_psi }}
+      FEATURE: ${{ needs.drift-check.outputs.max_feature }}
+      SAMPLES: ${{ needs.drift-check.outputs.samples }}
+      START: ${{ needs.traffic.outputs.start }}
+      APPI_ID: ${{ needs.traffic.outputs.appi_id }}
+      APPI_APP_ID: ${{ needs.traffic.outputs.appi_app_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -r requirements/ops.txt
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Record
+        run: |
+          conn=$(az resource show --ids "$APPI_ID" --query properties.ConnectionString -o tsv)
+          echo "::add-mask::$conn"
+          export APPLICATIONINSIGHTS_CONNECTION_STRING="$conn"
+          passed=false; [ "$STATUS" = drift ] && passed=true
+          python scripts/drill.py record --name drift --start "$START" --appinsights-app-id "$APPI_APP_ID" \
+            --expected "drift job reports drift on store/item for 800 skewed requests" \
+            --outcome "drift job status $STATUS: max PSI $MAX_PSI on $FEATURE over $SAMPLES requests" \
+            --passed "$passed" --extra "max_feature=$FEATURE"

@@ -73,3 +73,13 @@ def test_canary_requests_stay_inside_the_servable_window(ca: ModuleType) -> None
         assert date(2018, 1, 1) <= start and last <= date(2018, 4, 1)
         starts.add(start)
     assert len(starts) > 30  # spread over the window, not one date
+
+
+def test_outputs_for_the_drill_verdict(
+    ca: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert run(ca, monkeypatch, [ca.Stats(40, 0, 450.0)]) == 1
+    text = out.read_text()
+    assert "requests=40" in text and "p95_ms=450" in text and "verdict=p95 450 ms above 300 ms" in text

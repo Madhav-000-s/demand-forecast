@@ -19,6 +19,7 @@ locals {
     ["drift_history", "Drift: max PSI per drift-job run (alert above 0.25)", "drift_history", "timechart", "50", 2419200000],
     ["drift_latest", "Drift: PSI per feature, latest run", "drift_latest", "table", "50", 2419200000],
     ["drift_runs", "Drift job runs", "drift_runs", "table", "100", 2419200000],
+    ["drills", "Chaos drills: expectation vs outcome", "drills", "table", "100", 7776000000],
     ["cold_starts", "Replica starts (model load time)", "cold_starts", "table", "50", null],
     ["failures", "Recent 5xx responses", "failures", "table", "50", null],
   ]
@@ -60,6 +61,7 @@ locals {
               "## dfcast: demand forecast API",
               "SLOs over 28 days: **99.5%** of `/v1` requests non-5xx, **99%** under **300 ms**.",
               "Drift is checked every 6 h by the `drift` workflow (PSI per feature, alert above 0.25).",
+              "Chaos drills and their results: `drill` workflow, table below; postmortems in `docs/postmortems/`.",
               "Runbooks: `docs/runbooks/` in the repository.",
             ])
           }

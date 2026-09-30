@@ -10,6 +10,11 @@ name: deploy
 #
 # Before the Container App exists (first rollout) it stops after pushing the
 # image and prints the APP_IMAGE value for Terraform.
+#
+# Drills (drill.yml passes `drill`): the image is built with an injected fault
+# (bad-model: wrong forecasts with HTTP 200; slow-release: +400 ms per request).
+# A drill release is never promoted: it is always rolled back, and the job
+# fails only if the fault got past both the smoke test and the canary analysis.
 
 on:
   push:
@@ -34,6 +39,10 @@ on:
       model_version:
         type: string
         default: ""
+      drill:
+        description: none | bad-model | slow-release
+        type: string
+        default: none
 
 permissions:
   contents: read
@@ -60,7 +69,11 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      DRILL: ${{ inputs.drill || 'none' }}
     steps:
+      - name: Validate drill input
+        run: |
+          case "$DRILL" in none|bad-model|slow-release) ;; *) echo "::error::unknown drill $DRILL"; exit 1 ;; esac
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
@@ -121,20 +134,37 @@ jobs:
             echo "AML_MODEL_VERSION=$v"
             echo "MODEL_LABEL=$(jq -r .model_version artifacts/metadata.json)"
             # revision suffix: lowercase letters, digits, hyphens; starts with a letter
-            echo "SUFFIX=g${GITHUB_SHA::7}-m${v}-r${GITHUB_RUN_NUMBER}"
+            if [ "$DRILL" = none ]; then
+              echo "SUFFIX=g${GITHUB_SHA::7}-m${v}-r${GITHUB_RUN_NUMBER}"
+            else
+              echo "SUFFIX=drill-${DRILL}-m${v}-r${GITHUB_RUN_NUMBER}"
+            fi
           } >> "$GITHUB_ENV"
+
+      - name: Inject the drill fault into this build's artifacts
+        if: env.DRILL != 'none'
+        run: |
+          note=$(python scripts/drill.py prepare "$DRILL" --artifacts artifacts)
+          echo "DRILL_NOTE=$note" >> "$GITHUB_ENV"
+          echo "**Drill \`$DRILL\`:** $note" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build and push image
         run: |
           IMAGE="$ACR_SERVER/$IMAGE_NAME:${GITHUB_SHA::7}-m$AML_MODEL_VERSION"
+          if [ "$DRILL" != none ]; then IMAGE="$IMAGE-drill-$DRILL"; fi
           az acr login -n "$ACR_NAME"
           docker build -t "$IMAGE" .
+          if [ -f artifacts/fault.json ]; then
+            # drill image = production image + the fault file (the Dockerfile never copies it)
+            printf 'FROM %s\nCOPY fault.json /app/artifacts/fault.json\n' "$IMAGE" \
+              | docker build -t "$IMAGE" -f - artifacts
+          fi
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "Built \`$IMAGE\` with model **$MODEL_LABEL** (registry version $AML_MODEL_VERSION)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: First rollout (no Container App yet)
-        if: env.APP == ''
+        if: env.APP == '' && env.DRILL == 'none'
         run: |
           {
             echo "The Container App does not exist yet. Set the image for its first revision and apply Terraform:"
@@ -159,6 +189,7 @@ jobs:
         id: canary
         if: env.APP != ''
         run: |
+          echo "CANARY_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           az containerapp update -n "$APP" -g "$RG" --image "$IMAGE" --revision-suffix "$SUFFIX" -o none
           new="$APP--$SUFFIX"
           echo "name=$new" >> "$GITHUB_OUTPUT"
@@ -167,7 +198,9 @@ jobs:
           echo "Canary revision: \`$new\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Smoke test the canary (label URL, no user traffic)
+        id: smoke
         if: env.APP != ''
+        continue-on-error: ${{ (inputs.drill || 'none') != 'none' }} # a drill judges the outcome below
         run: |
           python scripts/smoke_test.py \
             --base-url "https://$APP---canary.$ENV_DOMAIN" \
@@ -181,25 +214,28 @@ jobs:
           props=$(jq -cn --arg rev "$CANARY" --arg model "$MODEL_LABEL" --arg sha "$GITHUB_SHA" \
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '{revision:$rev, model:$model, commit:$sha, run:$run}')
-          body=$(jq -cn --arg name "canary $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$props" \
+          label="canary"; if [ "$DRILL" != none ]; then label="drill $DRILL"; fi
+          body=$(jq -cn --arg name "$label $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$props" \
             '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:$p}]')
           az rest --method put --url "https://management.azure.com${APPI_ID}/Annotations?api-version=2015-05-01" --body "$body" -o none
 
       - name: Shift ${{ env.CANARY_PERCENT }}% of traffic to the canary
-        if: env.APP != ''
+        if: env.APP != '' && steps.smoke.outcome == 'success'
         run: |
           az containerapp ingress traffic set -n "$APP" -g "$RG" \
             --revision-weight "$STABLE=$((100 - CANARY_PERCENT))" "$CANARY=$CANARY_PERCENT" -o none
 
       - name: Canary analysis (${{ env.CANARY_MINUTES }} minutes)
-        if: env.APP != ''
+        id: analysis
+        if: env.APP != '' && steps.smoke.outcome == 'success'
+        continue-on-error: ${{ (inputs.drill || 'none') != 'none' }}
         run: |
           fqdn=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
           python scripts/canary_analysis.py --app-url "https://$fqdn" --revision "$CANARY" \
             --appinsights-app-id "$APPI_APP_ID" --minutes "$CANARY_MINUTES"
 
       - name: Promote canary to 100%
-        if: env.APP != ''
+        if: env.APP != '' && steps.analysis.outcome == 'success' && env.DRILL == 'none'
         run: |
           az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$CANARY=100" -o none
           az containerapp revision label remove -n "$APP" -g "$RG" --label canary -o none || true
@@ -209,11 +245,12 @@ jobs:
           echo "**Promoted** \`$CANARY\` to 100%; \`$STABLE\` deactivated (reactivate it to roll back)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Roll back
-        if: failure() && steps.canary.outcome == 'success'
+        if: (failure() || env.DRILL != 'none') && steps.canary.outcome == 'success'
         run: |
           az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$STABLE=100" -o none
           az containerapp revision label remove -n "$APP" -g "$RG" --label canary -o none || true
           az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$CANARY" -o none || true
+          echo "ROLLED_BACK=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           echo "**Rolled back**: 100% on \`$STABLE\`, \`$CANARY\` deactivated." >> "$GITHUB_STEP_SUMMARY"
           body=$(jq -cn --arg name "rollback $CANARY" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '[{AnnotationName:$name, EventTime:$t, Category:"Deployment", Properties:"{}"}]')
@@ -222,3 +259,34 @@ jobs:
       - name: Restore traffic if the canary was never created
         if: failure() && steps.stable.outcome == 'success' && steps.canary.outcome != 'success'
         run: az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$STABLE=100" -o none
+
+      - name: Drill verdict
+        if: always() && env.DRILL != 'none' && steps.canary.outcome == 'success'
+        env:
+          SMOKE: ${{ steps.smoke.outcome }}
+          ANALYSIS: ${{ steps.analysis.outcome }}
+          CANARY_REQUESTS: ${{ steps.analysis.outputs.requests || '0' }}
+          CANARY_P95: ${{ steps.analysis.outputs.p95_ms || '' }}
+          CANARY_VERDICT: ${{ steps.analysis.outputs.verdict || '' }}
+        run: |
+          conn=$(az resource show --ids "$APPI_ID" --query properties.ConnectionString -o tsv)
+          echo "::add-mask::$conn"
+          export APPLICATIONINSIGHTS_CONNECTION_STRING="$conn"
+          if [ "$SMOKE" = failure ]; then
+            passed=true; caught="smoke test"; users=0
+            outcome="smoke test rejected the canary before it received traffic; rolled back"
+          elif [ "$ANALYSIS" = failure ]; then
+            passed=true; caught="canary analysis"; users="$CANARY_REQUESTS"
+            outcome="canary analysis rolled back after $CANARY_REQUESTS canary requests ($CANARY_VERDICT)"
+          else
+            passed=false; caught="nothing"; users="$CANARY_REQUESTS"
+            outcome="fault NOT detected (smoke $SMOKE, analysis $ANALYSIS); rolled back by the drill"
+          fi
+          case "$DRILL" in
+            bad-model) expected="smoke test rejects wrong forecasts before any traffic shift" ;;
+            slow-release) expected="canary analysis sees p95 above 300 ms and rolls back" ;;
+          esac
+          python scripts/drill.py record --name "$DRILL" --start "$CANARY_START" --end "${ROLLED_BACK:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+            --expected "$expected" --outcome "$outcome" --passed "$passed" \
+            --extra "caught_by=$caught" --extra "revision=$CANARY" --extra "stable=$STABLE" \
+            --extra "canary_requests=$users" --extra "canary_p95_ms=$CANARY_P95" --extra "fault=$DRILL_NOTE"
