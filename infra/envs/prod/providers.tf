@@ -19,3 +19,7 @@ provider "azurerm" {
     }
   }
 }
+
+# Used only where azurerm lags the Azure API (the Container Apps environment).
+# Reads the same ARM_* environment variables (OIDC in CI, Azure CLI locally).
+provider "azapi" {}

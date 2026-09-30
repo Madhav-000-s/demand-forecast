@@ -1,9 +1,18 @@
 variable "resource_group_name" { type = string }
+variable "resource_group_id" { type = string }
 variable "location" { type = string }
 variable "environment_name" { type = string }
 variable "app_name" { type = string }
 variable "identity_name" { type = string }
-variable "log_analytics_workspace_id" { type = string }
+variable "log_analytics_customer_id" {
+  type        = string
+  description = "Log Analytics workspace (customer) GUID that receives container logs."
+}
+
+variable "log_analytics_shared_key" {
+  type      = string
+  sensitive = true
+}
 variable "acr_id" { type = string }
 variable "acr_login_server" { type = string }
 variable "key_vault_id" { type = string }

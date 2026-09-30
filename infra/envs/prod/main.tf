@@ -67,19 +67,21 @@ module "container_app" {
   source = "../../modules/container_app"
   count  = local.app_enabled ? 1 : 0
 
-  resource_group_name        = data.azurerm_resource_group.this.name
-  location                   = var.location
-  environment_name           = "cae-${local.base}"
-  app_name                   = "ca-${local.base}"
-  identity_name              = "id-${local.base}-app"
-  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
-  acr_id                     = module.registry.id
-  acr_login_server           = module.registry.login_server
-  key_vault_id               = module.keyvault.id
-  appinsights_secret_id      = module.keyvault.secret_ids["appinsights-connection-string"]
-  image                      = var.app_image
-  min_replicas               = var.min_replicas
-  tags                       = local.tags
+  resource_group_name       = data.azurerm_resource_group.this.name
+  location                  = var.location
+  resource_group_id         = data.azurerm_resource_group.this.id
+  environment_name          = "cae-wp-${local.base}" # new name: the old express environment is destroyed separately
+  app_name                  = "ca-${local.base}"
+  identity_name             = "id-${local.base}-app"
+  log_analytics_customer_id = module.observability.log_analytics_customer_id
+  log_analytics_shared_key  = module.observability.log_analytics_shared_key
+  acr_id                    = module.registry.id
+  acr_login_server          = module.registry.login_server
+  key_vault_id              = module.keyvault.id
+  appinsights_secret_id     = module.keyvault.secret_ids["appinsights-connection-string"]
+  image                     = var.app_image
+  min_replicas              = var.min_replicas
+  tags                      = local.tags
 }
 
 module "alerts" {

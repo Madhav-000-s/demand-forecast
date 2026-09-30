@@ -25,29 +25,65 @@ resource "time_sleep" "rbac_propagation" {
   create_duration = "60s"
 }
 
-resource "azurerm_container_app_environment" "this" {
-  name                       = var.environment_name
-  location                   = var.location
-  resource_group_name        = var.resource_group_name
-  log_analytics_workspace_id = var.log_analytics_workspace_id
-  logs_destination           = "log-analytics"
-  tags                       = var.tags
+# The environment is created through AzAPI because azurerm (API 2025-07-01)
+# cannot set `environmentMode`, and Azure then picks the "express" mode, which
+# has no multiple revisions, traffic splitting, labels, managed-identity image
+# pulls, Key Vault references or probes. API 2026-07-01 lets us ask for a
+# standard workload-profiles environment explicitly. The Consumption profile is
+# serverless (scale to zero, no base fee).
+resource "azapi_resource" "environment" {
+  type      = "Microsoft.App/managedEnvironments@2026-07-01"
+  name      = var.environment_name
+  parent_id = var.resource_group_id
+  location  = var.location
+  tags      = var.tags
 
-  # A workload-profiles environment is always a *standard* environment. Without
-  # a profile, Azure may create an "express" environment, which does not support
-  # multiple revisions, traffic splitting, labels, managed-identity image pulls,
-  # Key Vault references or probes - all needed for canary releases.
-  # The Consumption profile is serverless (scale to zero, no base fee).
-  # Profiles cannot be added later; changing this recreates the environment.
-  workload_profile {
-    name                  = "Consumption"
-    workload_profile_type = "Consumption"
+  # AzAPI's embedded schemas stop at 2026-01-01; Azure validates the request.
+  schema_validation_enabled = false
+
+  body = {
+    properties = {
+      environmentMode = "WorkloadProfiles"
+      zoneRedundant   = false
+      workloadProfiles = [
+        {
+          name                = "Consumption"
+          workloadProfileType = "Consumption"
+        }
+      ]
+      appLogsConfiguration = {
+        destination = "log-analytics"
+        logAnalyticsConfiguration = {
+          customerId = var.log_analytics_customer_id
+        }
+      }
+    }
+  }
+
+  # Write-only: never read back, never shown in plans.
+  sensitive_body = {
+    properties = {
+      appLogsConfiguration = {
+        logAnalyticsConfiguration = {
+          sharedKey = var.log_analytics_shared_key
+        }
+      }
+    }
+  }
+
+  response_export_values = ["properties.defaultDomain", "properties.environmentMode"]
+
+  lifecycle {
+    postcondition {
+      condition     = self.output.properties.environmentMode == "WorkloadProfiles"
+      error_message = "Container Apps environment is not in WorkloadProfiles mode; canary releases need a standard environment."
+    }
   }
 }
 
 resource "azurerm_container_app" "this" {
   name                         = var.app_name
-  container_app_environment_id = azurerm_container_app_environment.this.id
+  container_app_environment_id = azapi_resource.environment.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Multiple" # canary deploys split traffic between revisions
   workload_profile_name        = "Consumption"

@@ -87,6 +87,20 @@ mock_provider "random" {
 }
 mock_provider "time" {}
 
+mock_provider "azapi" {
+  mock_resource "azapi_resource" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000003/resourceGroups/rg-dfcast-prod-cin/providers/Microsoft.App/managedEnvironments/cae-wp-dfcast-prod-cin"
+      output = {
+        properties = {
+          defaultDomain   = "example.centralindia.azurecontainerapps.io"
+          environmentMode = "WorkloadProfiles"
+        }
+      }
+    }
+  }
+}
+
 variables {
   alert_email = "alerts@example.com"
 }
@@ -126,6 +140,10 @@ run "app_and_alerts_with_an_image" {
   assert {
     condition     = output.container_app_name == "ca-dfcast-prod-cin"
     error_message = "Unexpected app name"
+  }
+  assert {
+    condition     = module.container_app[0].environment_mode_requested == "WorkloadProfiles"
+    error_message = "The environment must request WorkloadProfiles mode (express lacks revisions and traffic splitting)"
   }
 }
 
