@@ -33,23 +33,24 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
-import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import appinsights  # scripts/ sibling module
 
 from ml.drift_stats import feature_psi
 from ml.features import CATEGORICAL_FEATURES, HISTORY_FEATURES
 
 MONITORED = CATEGORICAL_FEATURES + HISTORY_FEATURES
 EXCLUDED_SOURCES = ("canary", "smoke")
+ROLE = "dfcast-drift-job"
 _VERSION_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 _BASE = """
@@ -90,20 +91,7 @@ class Report:
 
 
 def run_query(app_id: str, query: str) -> list[list[Any]]:
-    """App Insights REST API through `az rest` (core CLI, no extension)."""
-    out = subprocess.run(
-        [
-            "az", "rest", "--method", "post",
-            "--url", f"https://api.applicationinsights.io/v1/apps/{app_id}/query",
-            "--resource", "https://api.applicationinsights.io",
-            "--headers", "Content-Type=application/json",
-            "--body", json.dumps({"query": query}),
-            "-o", "json",
-        ],
-        check=True, capture_output=True, text=True,
-    ).stdout  # fmt: skip
-    rows: list[list[Any]] = json.loads(out)["tables"][0]["rows"]
-    return rows
+    return appinsights.query(app_id, query)
 
 
 def _excluded() -> str:
@@ -150,16 +138,10 @@ def evaluate(
     return report
 
 
-def parse_connection_string(conn: str) -> tuple[str, str]:
-    parts = dict(p.split("=", 1) for p in conn.split(";") if "=" in p)
-    ikey = parts.get("InstrumentationKey", "")
-    endpoint = parts.get("IngestionEndpoint", "https://dc.services.visualstudio.com/")
-    if not ikey:
-        raise ValueError("connection string has no InstrumentationKey")
-    return ikey, endpoint.rstrip("/") + "/v2.1/track"
+parse_connection_string = appinsights.parse_connection_string
 
 
-def event_envelope(report: Report, ikey: str, run_url: str = "") -> dict[str, Any]:
+def event_properties(report: Report, run_url: str = "") -> tuple[dict[str, str], dict[str, float]]:
     measurements = {"samples": float(report.samples), "max_psi": report.max_psi}
     measurements.update({f"psi_{k}": v for k, v in report.psi.items()})
     properties = {
@@ -172,31 +154,17 @@ def event_envelope(report: Report, ikey: str, run_url: str = "") -> dict[str, An
         "min_samples": str(report.min_samples),
         "run_url": run_url,
     }
-    return {
-        "name": "Microsoft.ApplicationInsights.Event",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "iKey": ikey,
-        "tags": {"ai.cloud.role": "dfcast-drift-job"},
-        "data": {
-            "baseType": "EventData",
-            "baseData": {
-                "ver": 2,
-                "name": "drift_check",
-                "properties": properties,
-                "measurements": measurements,
-            },
-        },
-    }
+    return properties, measurements
+
+
+def event_envelope(report: Report, ikey: str, run_url: str = "") -> dict[str, Any]:
+    properties, measurements = event_properties(report, run_url)
+    return appinsights.event_envelope("drift_check", properties, measurements, ikey, ROLE)
 
 
 def send_event(report: Report, connection_string: str, run_url: str = "") -> None:
-    ikey, url = parse_connection_string(connection_string)
-    body = json.dumps([event_envelope(report, ikey, run_url)]).encode()
-    req = urllib.request.Request(url, data=body, headers={"content-type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        result = json.loads(r.read() or b"{}")
-    if result.get("itemsAccepted", 0) < 1:
-        raise RuntimeError(f"App Insights rejected the drift event: {result}")
+    properties, measurements = event_properties(report, run_url)
+    appinsights.send_event(connection_string, "drift_check", properties, measurements, ROLE)
 
 
 def markdown(report: Report) -> str:

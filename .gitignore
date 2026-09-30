@@ -42,3 +42,6 @@ desktop.ini
 
 # Terraform backend config with real names
 infra/envs/prod/backend.hcl
+
+# k6 drill output
+scripts/k6/k6-summary.json
