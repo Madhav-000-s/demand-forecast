@@ -126,5 +126,47 @@ def window_stats(app_id: str, start: datetime, end: datetime, sources: list[str]
     return stats
 
 
+TIMELINE = """
+let start = datetime({start});
+let end = datetime({end});
+requests
+| where timestamp between (start .. end)
+| where name has '/v1/'
+| summarize requests = sum(itemCount),
+            errors = sumif(itemCount, toint(resultCode) >= 500),
+            p50 = percentile(duration, 50), p95 = percentile(duration, 95),
+            replicas = dcount(cloud_RoleInstance)
+    by minute = bin(timestamp, 1m)
+| order by minute asc
+"""
+
+REPLICA_STARTS = """
+traces
+| where timestamp between (datetime({start}) .. datetime({end}))
+| where message == 'model loaded'
+| project timestamp, replica = cloud_RoleInstance, revision = application_Version,
+          load_seconds = todouble(customDimensions.model_load_seconds)
+| order by timestamp asc
+"""
+
+
+def timeline(app_id: str, start: datetime, end: datetime) -> list[dict]:
+    """Per-minute /v1 requests (weighted), 5xx, p50/p95 ms and replicas serving."""
+    rows = query(app_id, TIMELINE.format(start=_iso(start), end=_iso(end)))
+    keys = ["minute", "requests", "errors", "p50", "p95", "replicas"]
+    out = []
+    for r in rows:
+        d = dict(zip(keys, r, strict=False))
+        d["p50"], d["p95"] = round(float(d["p50"] or 0), 1), round(float(d["p95"] or 0), 1)
+        out.append(d)
+    return out
+
+
+def replica_starts(app_id: str, start: datetime, end: datetime) -> list[dict]:
+    """Replica starts (each loads the model) in a window: cold starts and scale-out."""
+    rows = query(app_id, REPLICA_STARTS.format(start=_iso(start), end=_iso(end)))
+    return [dict(zip(["timestamp", "replica", "revision", "load_seconds"], r, strict=False)) for r in rows]
+
+
 def _iso(t: datetime) -> str:
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

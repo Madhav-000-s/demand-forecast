@@ -14,6 +14,8 @@ name: drill
 #                 -> server p95 stays under 300 ms, < 1% errors, replicas scale out
 #   restart       restart the serving revision under steady traffic
 #                 -> < 1% of requests fail while replicas come back
+#   report        not a drill: per-minute telemetry (requests, p50/p95,
+#                 replicas) and replica starts for a past window
 #
 # Drill traffic carries X-Traffic-Source: drill (or load); release drills run
 # the real deploy.yml path with a fault baked into the image and are never
@@ -25,11 +27,19 @@ on:
       drill:
         description: Which drill
         type: choice
-        options: [bad-model, slow-release, drift, load, restart]
+        options: [bad-model, slow-release, drift, load, restart, report]
       retrain:
         description: "drift only: let the drift job start train.yml (24 h cooldown applies)"
         type: boolean
         default: false
+      start:
+        description: "report only: window start, UTC ISO time (e.g. 2026-09-30T17:09:00Z)"
+        type: string
+        default: ""
+      end:
+        description: "report only: window end, UTC ISO time"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -55,7 +65,7 @@ jobs:
 
   # --- traffic drills ----------------------------------------------------------
   traffic:
-    if: inputs.drill == 'drift' || inputs.drill == 'load' || inputs.drill == 'restart'
+    if: contains(fromJSON('["drift", "load", "restart", "report"]'), inputs.drill)
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
@@ -117,8 +127,18 @@ jobs:
           echo "::add-mask::$conn"
           echo "APPLICATIONINSIGHTS_CONNECTION_STRING=$conn" >> "$GITHUB_ENV"
 
+      - name: "report: telemetry timeline for the given window"
+        if: env.DRILL == 'report'
+        env:
+          WINDOW_START: ${{ inputs.start }}
+          WINDOW_END: ${{ inputs.end }}
+        run: |
+          python scripts/drill.py report --start "$WINDOW_START" --end "$WINDOW_END" \
+            --appinsights-app-id "$APPI_APP_ID"
+
       - name: Start of the drill window
         id: window
+        if: env.DRILL != 'report'
         run: |
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "START=$now" >> "$GITHUB_ENV"
@@ -165,6 +185,7 @@ jobs:
         run: |
           end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           export END="$end"
+          SOURCES=drill; if [ "$DRILL" = load ]; then SOURCES=load; fi
           sleep 180
           if [ "$DRILL" = load ]; then
             expected="server p95 < 300 ms and < 1% errors at 100 VUs; replicas scale out"
@@ -198,7 +219,8 @@ jobs:
           python scripts/drill.py record --name "$DRILL" --start "$START" --end "$end" \
             --appinsights-app-id "$APPI_APP_ID" --client-stats client.json \
             --expected "$expected" --outcome "${verdict#*|}" --passed "${verdict%%|*}" \
-            --extra "revision=${RESTARTED_REVISION:-}" --out drill.json
+            --extra "revision=${RESTARTED_REVISION:-}" --sources "$SOURCES" --out drill.json
+          python scripts/drill.py report --start "$START" --end "$end" --appinsights-app-id "$APPI_APP_ID"
 
       - uses: actions/upload-artifact@v7
         if: always()

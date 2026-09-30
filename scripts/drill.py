@@ -206,10 +206,11 @@ def record(
     outcome: str,
     passed: bool,
     extra: dict[str, str] | None = None,
+    sources: list[str] | None = None,
 ) -> dict[str, Any]:
     server: dict[str, Any] = {}
     if app_id:
-        server = appinsights.window_stats(app_id, start, end, sources=["drill"])
+        server = appinsights.window_stats(app_id, start, end, sources=sources or ["drill"])
         server_all = appinsights.window_stats(app_id, start, end)
         server["all_sources_requests"] = server_all["requests"]
         server["all_sources_errors"] = server_all["errors"]
@@ -251,6 +252,20 @@ def markdown(result: dict[str, Any]) -> str:
     if rows:
         lines += ["| side | metric | value |", "|---|---|---|"]
         lines += [f"| {side} | {k} | {v} |" for side, k, v in rows]
+    return "\n".join(lines)
+
+
+def report(app_id: str, start: datetime, end: datetime) -> str:
+    """Markdown: per-minute timeline and replica starts for a window."""
+    lines = [f"### Telemetry {start.isoformat()} to {end.isoformat()}\n"]
+    rows = appinsights.timeline(app_id, start, end)
+    lines += ["| minute (UTC) | requests | 5xx | p50 ms | p95 ms | replicas |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        cells = [str(r["minute"])[11:16], r["requests"], r["errors"], r["p50"], r["p95"], r["replicas"]]
+        lines.append("| " + " | ".join(str(c) for c in cells) + " |")
+    starts = appinsights.replica_starts(app_id, start, end)
+    lines += ["", "| replica start (UTC) | replica | model load s |", "|---|---|---|"]
+    lines += [f"| {str(r['timestamp'])[11:19]} | {r['replica']} | {r['load_seconds']} |" for r in starts]
     return "\n".join(lines)
 
 
@@ -301,6 +316,11 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--rps", type=float, help="total requests per second cap")
     tr.add_argument("--out", type=Path)
 
+    rp = sub.add_parser("report", help="per-minute telemetry timeline for a window")
+    rp.add_argument("--start", required=True, type=_parse_time)
+    rp.add_argument("--end", required=True, type=_parse_time)
+    rp.add_argument("--appinsights-app-id", required=True)
+
     k6 = sub.add_parser("k6-stats", help="convert a k6 summary into client stats JSON")
     k6.add_argument("summary", type=Path)
     k6.add_argument("--out", type=Path, required=True)
@@ -315,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     rc.add_argument("--outcome", required=True)
     rc.add_argument("--passed", choices=["true", "false"], required=True)
     rc.add_argument("--extra", action="append", default=[], help="key=value property, repeatable")
+    rc.add_argument("--sources", default="drill", help="comma-separated X-Traffic-Source values")
     rc.add_argument("--out", type=Path)
 
     a = p.parse_args(argv)
@@ -335,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
             a.out.write_text(json.dumps(summary, indent=2))
         return 0
 
+    if a.cmd == "report":
+        _summary(report(a.appinsights_app_id, a.start, a.end))
+        return 0
+
     if a.cmd == "k6-stats":
         k6_stats = k6_client_stats(json.loads(a.summary.read_text()))
         a.out.write_text(json.dumps(k6_stats, indent=2))
@@ -345,7 +370,16 @@ def main(argv: list[str] | None = None) -> int:
     extra = dict(kv.split("=", 1) for kv in a.extra)
     end = a.end or datetime.now(timezone.utc)
     result = record(
-        a.name, a.start, end, a.appinsights_app_id, client, a.expected, a.outcome, a.passed == "true", extra
+        a.name,
+        a.start,
+        end,
+        a.appinsights_app_id,
+        client,
+        a.expected,
+        a.outcome,
+        a.passed == "true",
+        extra,
+        sources=[s for s in a.sources.split(",") if s],
     )
     if a.out:
         a.out.write_text(json.dumps(result, indent=2, default=str))
