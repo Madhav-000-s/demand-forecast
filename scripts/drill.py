@@ -106,13 +106,19 @@ class ClientStats:
         return d
 
 
+def ops_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Add X-Ops-Token (from OPS_BYPASS_TOKEN) so drill traffic skips the rate limit."""
+    token = os.environ.get("OPS_BYPASS_TOKEN")
+    return {**headers, "x-ops-token": token} if token else headers
+
+
 def send_one(
     app_url: str, body: dict[str, Any], source: str, stats: ClientStats, lock: threading.Lock
 ) -> None:
     req = urllib.request.Request(
         app_url.rstrip("/") + "/v1/forecast",
         data=json.dumps(body).encode(),
-        headers={"content-type": "application/json", "x-traffic-source": source},
+        headers=ops_headers({"content-type": "application/json", "x-traffic-source": source}),
         method="POST",
     )
     t0 = time.perf_counter()

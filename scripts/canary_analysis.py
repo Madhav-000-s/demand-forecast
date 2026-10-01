@@ -90,6 +90,12 @@ def request_body(rng: random.Random) -> dict:
     }
 
 
+def ops_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Add X-Ops-Token (from OPS_BYPASS_TOKEN) so synthetic traffic skips the rate limit."""
+    token = os.environ.get("OPS_BYPASS_TOKEN")
+    return {**headers, "x-ops-token": token} if token else headers
+
+
 def traffic(app_url: str, stop: threading.Event, rps: float) -> None:
     """Send forecast requests to the public URL until stopped.
 
@@ -100,7 +106,7 @@ def traffic(app_url: str, stop: threading.Event, rps: float) -> None:
         req = urllib.request.Request(
             app_url.rstrip("/") + "/v1/forecast",
             data=json.dumps(request_body(rng)).encode(),
-            headers={"content-type": "application/json", "x-traffic-source": "canary"},
+            headers=ops_headers({"content-type": "application/json", "x-traffic-source": "canary"}),
             method="POST",
         )
         # errors are measured server-side from App Insights, not here

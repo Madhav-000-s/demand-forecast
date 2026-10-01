@@ -66,7 +66,7 @@ jobs:
   # --- traffic drills ----------------------------------------------------------
   traffic:
     if: contains(fromJSON('["drift", "load", "restart", "report"]'), inputs.drill)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 30
     # Same lock as deploy.yml: drill traffic must not overlap a canary release
@@ -120,11 +120,25 @@ jobs:
             echo "APP_URL=$(terraform output -raw app_url)"
             echo "APPI_ID=$(terraform output -raw app_insights_id)"
             echo "APPI_APP_ID=$(terraform output -raw app_insights_app_id)"
+            echo "KV_NAME=$(terraform output -raw key_vault_name 2>/dev/null || true)"
           } >> "$GITHUB_ENV"
           {
             echo "appi_id=$(terraform output -raw app_insights_id)"
             echo "appi_app_id=$(terraform output -raw app_insights_app_id)"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Ops token (lets synthetic traffic past the API rate limit)
+        run: |
+          tok=""
+          if [ -n "${KV_NAME:-}" ]; then
+            tok=$(az keyvault secret show --vault-name "$KV_NAME" -n ops-bypass-token --query value -o tsv 2>/dev/null || true)
+          fi
+          if [ -n "$tok" ]; then
+            echo "::add-mask::$tok"
+            echo "OPS_BYPASS_TOKEN=$tok" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no ops token in Key Vault yet; synthetic traffic is subject to the rate limit"
+          fi
 
       - name: App Insights connection string (for the drill record)
         run: |
@@ -167,7 +181,7 @@ jobs:
         continue-on-error: true # threshold breaches are drill findings, recorded below
         run: |
           docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/scripts/k6:/scripts" -w /scripts \
-            -e BASE_URL="$APP_URL" "$K6_IMAGE" run load.js
+            -e BASE_URL="$APP_URL" -e OPS_TOKEN="${OPS_BYPASS_TOKEN:-}" "$K6_IMAGE" run load.js
           python scripts/drill.py k6-stats scripts/k6/k6-summary.json --out client.json
 
       # restart: steady traffic, restart the serving revision after a minute
@@ -249,7 +263,7 @@ jobs:
   drift-record:
     needs: [traffic, drift-check]
     if: always() && inputs.drill == 'drift' && needs.traffic.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     env:
       STATUS: ${{ needs.drift-check.outputs.status }}

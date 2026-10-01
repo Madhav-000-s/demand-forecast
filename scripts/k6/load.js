@@ -41,7 +41,10 @@ function body() {
 
 export default function () {
   const res = http.post(`${BASE_URL}/v1/forecast`, body(), {
-    headers: { "content-type": "application/json", "x-traffic-source": "load" },
+    headers: Object.assign(
+      { "content-type": "application/json", "x-traffic-source": "load" },
+      __ENV.OPS_TOKEN ? { "x-ops-token": __ENV.OPS_TOKEN } : {},
+    ),
     timeout: "30s",
   });
   check(res, { "status 200": (r) => r.status === 200 });

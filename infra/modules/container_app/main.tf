@@ -106,6 +106,12 @@ resource "azurerm_container_app" "this" {
     identity            = azurerm_user_assigned_identity.app.id
   }
 
+  secret {
+    name                = "ops-bypass-token"
+    key_vault_secret_id = var.ops_token_secret_id
+    identity            = azurerm_user_assigned_identity.app.id
+  }
+
   ingress {
     external_enabled = true
     target_port      = 8000
@@ -139,6 +145,18 @@ resource "azurerm_container_app" "this" {
       env {
         name  = "LOG_LEVEL"
         value = "INFO"
+      }
+      env {
+        name  = "RATE_LIMIT_RPS"
+        value = tostring(var.rate_limit_rps)
+      }
+      env {
+        name  = "RATE_LIMIT_BURST"
+        value = tostring(var.rate_limit_burst)
+      }
+      env {
+        name        = "OPS_BYPASS_TOKEN"
+        secret_name = "ops-bypass-token"
       }
 
       # Model load + warm-up gets up to 2 minutes (24 x 5 s).

@@ -1,5 +1,6 @@
 output "resource_group" { value = data.azurerm_resource_group.this.name }
 output "acr_name" { value = module.registry.name }
+output "key_vault_name" { value = module.keyvault.name }
 output "acr_login_server" { value = module.registry.login_server }
 output "app_insights_id" { value = module.observability.app_insights_id }
 output "app_insights_app_id" { value = module.observability.app_insights_app_id }

@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from app import faults as fault_injection
-from app import logging_setup, telemetry
+from app import logging_setup, ratelimit, telemetry
 from app.model import ForecastModel, ForecastRangeError
 from app.schemas import (
     BatchRequest,
@@ -53,6 +53,7 @@ class State:
     ready: bool = False
     load_error: str | None = None
     faults: fault_injection.Faults = fault_injection.Faults()
+    limiter: ratelimit.RateLimiter = ratelimit.RateLimiter(0, 0)
 
 
 state = State()
@@ -86,6 +87,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logging_setup.configure(os.environ.get("LOG_LEVEL", "INFO"))
     artifact_dir = os.environ.get("ARTIFACT_DIR", "artifacts")
     state.faults = fault_injection.load(artifact_dir)
+    state.limiter = ratelimit.RateLimiter.from_env()
     load_model(artifact_dir)
     yield
 
@@ -108,18 +110,31 @@ async def request_context(request: Request, call_next: Callable[[Request], Await
     request.state.request_id = request_id
     request.state.traffic_source = traffic_source(request)
     t0 = time.perf_counter()
-    if state.faults.extra_latency_ms and request.url.path.startswith("/v1/"):
-        await asyncio.sleep(state.faults.extra_latency_ms / 1000)  # drill images only
-    try:
-        response = await call_next(request)
-    except Exception:
-        log.exception("unhandled error", extra={"request_id": request_id, "path": request.url.path})
-        response = JSONResponse(status_code=500, content={"detail": "internal error"})
+    is_api = request.url.path.startswith("/v1/")
+    decision = ratelimit.Decision(True)
+    if is_api and not ratelimit.has_ops_token(request):
+        decision = state.limiter.check(ratelimit.client_key(request))
+    response: Response
+    if not decision.allowed:
+        telemetry.RATE_LIMITED.add(1)
+        response = JSONResponse(
+            status_code=429,
+            content={"detail": "rate limit exceeded"},
+            headers={"Retry-After": str(decision.retry_after_s)},
+        )
+    else:
+        if state.faults.extra_latency_ms and is_api:
+            await asyncio.sleep(state.faults.extra_latency_ms / 1000)  # drill images only
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception("unhandled error", extra={"request_id": request_id, "path": request.url.path})
+            response = JSONResponse(status_code=500, content={"detail": "internal error"})
     elapsed_ms = (time.perf_counter() - t0) * 1000
     response.headers["X-Request-ID"] = request_id
     if state.model is not None:
         response.headers["X-Model-Version"] = state.model.version
-    if request.url.path.startswith("/v1/"):
+    if is_api:
         log.info(
             "request",
             extra={
