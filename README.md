@@ -1,13 +1,84 @@
 # dfcast: demand forecasting service on Azure
 
-A store-item demand forecasting API, run the way a production team would run it:
-provisioned with Terraform, shipped by GitHub Actions, watched with Application
-Insights dashboards and alerts, and held to written SLOs. The model is deliberately
-simple; the platform around it is the point.
+A store-item demand forecasting API run the way a production team would run
+it: infrastructure in Terraform, training as Azure ML jobs behind a promotion
+gate, 10% canary releases with automated rollback, OpenTelemetry dashboards and
+SLO alerts, drift detection that triggers retraining, and chaos drills with
+postmortems written from real telemetry. The model is deliberately simple; the
+platform around it is the point.
 
-> Status: **live on Azure** (Central India) since 2026-09-30. Milestones 1-6:
-> model, API, Terraform, CI/CD, canary deploys, dashboards, drift detection and
-> chaos drills with postmortems ([results](docs/postmortems/2026-09-30-drill-results.md)).
+**Live:** [API docs (try it)](https://ca-dfcast-prod-cin.nicewater-76c4f992.centralindia.azurecontainerapps.io/docs)
+· [`/v1/model`](https://ca-dfcast-prod-cin.nicewater-76c4f992.centralindia.azurecontainerapps.io/v1/model)
+(scales to zero when idle, so the first request can take ~20 s)
+
+| | Measured |
+|---|---|
+| Forecast accuracy (91-day horizon, 500 series) | SMAPE **12.36** vs 17.84 seasonal naive (31% lower) |
+| Latency under a 100-user k6 spike | server p95 **17 ms**, p99 87 ms at 73 req/s, 0 errors (after fixing a drill failure at p95 1.35 s) |
+| Bad release (wrong forecasts, HTTP 200) | rejected by the smoke test before any traffic; rolled back in 1 min 46 s |
+| Slow release (+400 ms) | rolled back by canary analysis after 43 canary requests |
+| Input drift (skewed traffic) | detected: PSI 6.8 on store/item, alert raised |
+| Tests | 137 pytest (94% coverage of `app` and `ml`), Terraform plan tests with mocked providers |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  dev[Pull request] --> pr[pr.yml<br/>ruff · mypy · pytest<br/>terraform test · Checkov · Trivy<br/>plan comment]
+  pr -->|merge| infra[infra.yml<br/>terraform apply]
+  pr -->|merge| train[train.yml]
+  pr -->|merge| deploy[deploy.yml]
+
+  subgraph azure[Azure, Central India]
+    aml[Azure ML<br/>training job · model registry]
+    acr[Container Registry]
+    subgraph aca[Container Apps]
+      stable[stable revision<br/>90-100%]
+      canary[canary revision<br/>0-10%]
+    end
+    kv[Key Vault]
+    appi[Application Insights<br/>+ Log Analytics]
+    wb[Workbook · SLO alerts<br/>drift alert · budget]
+  end
+
+  train -->|command job| aml -->|gate passed| deploy
+  deploy -->|image with model N| acr --> canary
+  deploy -->|smoke test · 10% · analysis| canary
+  infra --> azure
+  kv -->|managed identity| aca
+  users[Clients] -->|rate-limited /v1| stable
+  aca -->|OpenTelemetry| appi --> wb
+  drift[drift.yml<br/>every 6 h] -->|PSI per feature| appi
+  drift -->|on drift| train
+  drill[drill.yml<br/>chaos drills] -.-> deploy
+  drill -.->|k6 · skewed traffic · restart| aca
+```
+
+All Azure access from CI uses OpenID Connect with a user-assigned managed
+identity: no stored credentials.
+
+### How a release works
+
+1. A model is trained as an Azure ML job; the gate releases it only if it beats
+   seasonal naive and is within 2% of production.
+2. `deploy.yml` builds an image with that model baked in and creates a new
+   revision with **0% traffic**.
+3. A smoke test hits the revision's private label URL and compares 20 fixed
+   forecasts with what training produced.
+4. 10% of traffic moves to it; for 10 minutes App Insights is queried for the
+   canary revision's 5xx rate and p95.
+5. Promote to 100%, or roll back to the stable revision.
+
+### Canary safety checks
+
+Training writes `canary_reference.json`: 20 fixed requests with the predictions
+the model produced and the seasonal-naive values for the same days. Before a new
+revision gets any traffic, the smoke test requires its answers to match the
+training output (so the image contains the model we think it does) and to stay
+within SMAPE 35 of seasonal naive. The real model scores 13.7; a constant model
+scores 53. A model that returns plausible-looking nonsense with HTTP 200 is
+stopped here, not by users.
+
 
 ## Model
 
@@ -37,6 +108,7 @@ Test window 2017-10-01 to 2017-12-30, all 500 series (45,500 predictions):
 
 A **promotion gate** (`ml/gate.py`) only releases a model whose test SMAPE beats
 seasonal naive and is no more than 2% worse than the model in production.
+
 
 ## API
 
@@ -68,59 +140,30 @@ input features, which the drift job compares against `reference_stats.json`.
 Deploy tooling marks its synthetic requests with `X-Traffic-Source` (`canary`,
 `smoke`) so they are kept out of drift statistics.
 
-## Run it locally
+**Rate limit.** The API is public, so each client IP gets a token bucket
+(10 requests/s sustained, bursts of 50, per replica); over the limit it answers
+`429` with `Retry-After`. Probes are never limited. Deploy and drill traffic,
+which comes from one GitHub runner IP, sends an `X-Ops-Token` from Key Vault to
+pass ([app/ratelimit.py](app/ratelimit.py)).
 
-```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements/dev.txt
-
-# data/raw/train.csv from Kaggle (not committed)
-python -m ml.train --data data/raw/train.csv --out artifacts
-python -m ml.gate --candidate artifacts/metrics.json
-
-uvicorn app.main:app --reload            # http://localhost:8000/docs
-pytest                                    # unit + API contract tests (synthetic data, no CSV needed)
-ruff check . && ruff format --check . && mypy app ml scripts
-```
-
-Docker (artifacts are baked into the image, so one tag pins one model):
-
-```bash
-docker build -t dfcast:dev .
-docker run --rm -p 8000:8000 dfcast:dev
-```
 
 ## Platform
 
-```
-GitHub (PR) ── pr.yml: ruff · mypy · pytest+coverage · terraform fmt/validate/plan · Checkov · Trivy · SonarCloud
-   │ merge
-   ├─ infra.yml ── terraform apply (OIDC, no secrets) ──► Azure (Central India)
-   ├─ drift.yml (every 6 h) ── PSI of recent request features vs reference ─► drift_check event
-   │                            └─ on drift: alert + start train.yml (24 h cooldown)
-   ├─ train.yml ── Azure ML command job ─► promotion gate ─► model registry (dfcast-lgbm:N)
-   │                                                            │
-   └─ deploy.yml ◄──────────────────────────────────────────────┘
-        build image with model N ─► ACR ─► Container Apps revision at 0%
-        ─► smoke test on the canary label URL ─► 10% traffic ─► 10-min analysis
-           (App Insights: canary 5xx rate and p95) ─► promote to 100% or roll back
-```
-
 | Azure resource | Purpose |
 |---|---|
-| Container Apps (Workload Profiles environment, multiple-revision mode, 0-3 replicas) | API hosting, canary traffic splitting |
+| Container Apps (Workload Profiles environment, multiple-revision mode, 1 vCPU replicas, 0-5) | API hosting, canary traffic splitting |
 | Container Registry (Basic) | Images, pulled by the app's managed identity |
 | Azure Machine Learning (workspace, 0-1 node CPU cluster, model registry) | Training jobs and model versions |
 | Log Analytics + Application Insights (OpenTelemetry) | Traces, logs, custom metrics, SLO queries |
-| Azure Monitor workbook | SLO / error-budget dashboard, canary traffic, drift history |
+| Azure Monitor workbook | SLO / error-budget dashboard, canary traffic, drift history, drills |
 | Key Vault (RBAC) | App secrets, read via managed identity |
 | Monitor alerts + action group, budget | Latency / 5xx SLO alerts, drift, restarts, $25/$50/$75 spend |
 
 Each alert links to a runbook in [docs/runbooks](docs/runbooks). Every PR uses
-a template with a risk level and rollback plan; `main` requires review
-(CODEOWNERS) and green checks.
+a template with a risk level and rollback plan, and shows the Terraform plan
+for production as a comment. Dependabot proposes dependency updates weekly.
 
-### Observability and drift
+## Observability and drift
 
 The API exports requests, logs and two custom metrics (forecasts by horizon,
 mean predicted units by model) to Application Insights through OpenTelemetry.
@@ -143,7 +186,8 @@ requests the job reports `insufficient_data` instead of guessing. On drift it
 raises an Azure alert and starts `train.yml`, so a retrained model goes
 through the gate and a canary like any other release.
 
-### Chaos drills
+
+## Chaos drills
 
 `drill.yml` breaks production on purpose to prove the safety nets; each drill
 has a written expectation and records its measured result in App Insights
@@ -162,15 +206,40 @@ sampling, and deploy annotations that had never been written
 ([findings](docs/postmortems/2026-09-30-drill-results.md),
 [load postmortem](docs/postmortems/2026-09-30-load-drill-latency.md)).
 
-### Canary safety checks
 
-Training writes `canary_reference.json`: 20 fixed requests with the predictions
-the model produced and the seasonal-naive values for the same days. Before a new
-revision gets any traffic, the smoke test requires its answers to match the
-training output (so the image contains the model we think it does) and to stay
-within SMAPE 35 of seasonal naive. The real model scores 13.7; a constant model
-scores 53. A model that returns plausible-looking nonsense with HTTP 200 is
-stopped here, not by users.
+## Honest limits
+
+- **Traffic is synthetic.** Load, drift and canary traffic come from k6, drill
+  scripts and the canary analysis; there are no real users.
+- **The data is static** (Kaggle, 2013-2017). Retraining exercises the gate
+  and the canary but reproduces the same model; a live feed would change that.
+- **Single region, public endpoint.** No private networking (cost), and the
+  per-replica rate limit is the only abuse control, not authentication.
+- **Scale-to-zero means cold starts** of ~20 s after idle; `MIN_REPLICAS=1`
+  removes them at the cost of an always-on replica.
+
+## Run it locally
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements/dev.txt
+
+# data/raw/train.csv from Kaggle (not committed)
+python -m ml.train --data data/raw/train.csv --out artifacts
+python -m ml.gate --candidate artifacts/metrics.json
+
+uvicorn app.main:app --reload            # http://localhost:8000/docs
+pytest                                    # unit + API contract tests (synthetic data, no CSV needed)
+ruff check . && ruff format --check . && mypy app ml scripts
+```
+
+Docker (artifacts are baked into the image, so one tag pins one model):
+
+```bash
+docker build -t dfcast:dev .
+docker run --rm -p 8000:8000 dfcast:dev
+```
+
 
 ## Repository layout
 
@@ -184,15 +253,13 @@ infra/bootstrap/  one-time script: providers, state storage, GitHub OIDC identit
 infra/modules/    observability, registry, keyvault, container_app, alerts, azureml, dashboard
 infra/envs/prod/  root configuration and remote-state backend
 .github/          workflows, PR template, CODEOWNERS, Dependabot
-docs/             setup guide, runbooks
+docs/             setup guide, runbooks, drills, postmortems
 ```
 
-## Roadmap
 
-1. ~~Model and API~~
-2. ~~Terraform (Container Apps, ACR, Key Vault, App Insights, Azure ML) and GitHub Actions workflows~~
-3. ~~Accounts and identity (OIDC, state storage)~~
-4. ~~First deploy~~
-5. ~~Observability dashboards, drift detection and drift-triggered retraining~~
-6. ~~Chaos drills and a postmortem written from real telemetry~~
-7. Portfolio polish
+## Documentation
+
+- [Setup: from an empty subscription to a live canary pipeline](docs/setup.md)
+- [Runbooks](docs/runbooks) for every alert
+- [Chaos drills](docs/drills.md) and [postmortems](docs/postmortems)
+- [Dashboard queries](infra/modules/dashboard/queries)
