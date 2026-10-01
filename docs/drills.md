@@ -35,3 +35,10 @@ India (~200+ ms). SLO numbers come from App Insights (server-side request
 duration), which the drill record reports separately.
 
 After a drill, write a postmortem from its record: [postmortems/](postmortems/).
+Per-minute telemetry for any window:
+`gh workflow run drill.yml -f drill=report -f start=<UTC ISO> -f end=<UTC ISO>`.
+
+Drill traffic jobs take the `deploy-prod` lock, so they wait for a running
+deploy instead of loading the service mid-canary.
+
+First round of results: [postmortems/2026-09-30-drill-results.md](postmortems/2026-09-30-drill-results.md).

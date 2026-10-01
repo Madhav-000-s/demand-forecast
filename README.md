@@ -5,9 +5,9 @@ provisioned with Terraform, shipped by GitHub Actions, watched with Application
 Insights dashboards and alerts, and held to written SLOs. The model is deliberately
 simple; the platform around it is the point.
 
-> Status: **live on Azure** (Central India) since 2026-09-30. Milestones 1-5:
-> model, API, Terraform, CI/CD, first deploy, dashboards and drift detection.
-> Next: chaos drills and a postmortem ([setup](docs/setup.md)).
+> Status: **live on Azure** (Central India) since 2026-09-30. Milestones 1-6:
+> model, API, Terraform, CI/CD, canary deploys, dashboards, drift detection and
+> chaos drills with postmortems ([results](docs/postmortems/2026-09-30-drill-results.md)).
 
 ## Model
 
@@ -145,13 +145,22 @@ through the gate and a canary like any other release.
 
 ### Chaos drills
 
-`drill.yml` breaks production on purpose to prove the safety nets:
-a release with plausible-but-wrong forecasts (`bad-model`), a release that is
-400 ms slower (`slow-release`), skewed traffic (`drift`), a k6 load spike
-(`load`) and a revision restart under traffic (`restart`). Each drill has a
-written expectation and records its measured result in App Insights; see
-[docs/drills.md](docs/drills.md) and the postmortems in
-[docs/postmortems](docs/postmortems).
+`drill.yml` breaks production on purpose to prove the safety nets; each drill
+has a written expectation and records its measured result in App Insights
+([docs/drills.md](docs/drills.md)). First round, 2026-09-30:
+
+| Drill | Result |
+|---|---|
+| Release with forecasts ~30% off (HTTP 200) | Smoke test rejected it before any traffic; rolled back in 1 min 46 s |
+| Release 400 ms slower | Canary analysis rolled back at p95 414 ms after 43 canary requests |
+| 800 skewed requests | Drift job: PSI 6.8 on store/item, alert raised |
+| k6 spike to 100 users | **Failed**: p95 1.35 s. Fixed (1 vCPU, earlier scale-out): p95 17 ms at 73 req/s |
+| Revision restart under traffic | 0.58% of requests failed, no 5xx |
+
+The drills also found two silent bugs: request telemetry undercounted by
+sampling, and deploy annotations that had never been written
+([findings](docs/postmortems/2026-09-30-drill-results.md),
+[load postmortem](docs/postmortems/2026-09-30-load-drill-latency.md)).
 
 ### Canary safety checks
 
@@ -185,5 +194,5 @@ docs/             setup guide, runbooks
 3. ~~Accounts and identity (OIDC, state storage)~~
 4. ~~First deploy~~
 5. ~~Observability dashboards, drift detection and drift-triggered retraining~~
-6. Chaos drills and a postmortem written from real telemetry
+6. ~~Chaos drills and a postmortem written from real telemetry~~
 7. Portfolio polish
