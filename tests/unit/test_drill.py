@@ -276,3 +276,12 @@ def test_record_uses_the_requested_sources(drill: ModuleType, monkeypatch: pytes
     start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
     drill.record("load", start, start, "app", None, "e", "o", True, sources=["load"])
     assert seen == [["load"], None]
+
+
+def test_drill_traffic_sends_the_ops_token(
+    drill: ModuleType, fake_api: tuple[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPS_BYPASS_TOKEN", "tok")
+    assert drill.ops_headers({"a": "b"}) == {"a": "b", "x-ops-token": "tok"}
+    monkeypatch.delenv("OPS_BYPASS_TOKEN")
+    assert drill.ops_headers({"a": "b"}) == {"a": "b"}

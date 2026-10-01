@@ -5,12 +5,17 @@ Tests never read the real Kaggle file, so they run in CI without it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from ml.synthetic import SYNTH_PARAMS, make_sales_frame
 from ml.train import Splits, run
+
+# The API tests share one client and send hundreds of requests in milliseconds;
+# rate limiting has its own tests (tests/api/test_ratelimit.py).
+os.environ.setdefault("RATE_LIMIT_RPS", "0")
 
 
 @pytest.fixture(scope="session")

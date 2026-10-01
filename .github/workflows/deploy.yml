@@ -61,7 +61,7 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 45
     env:
@@ -112,12 +112,26 @@ jobs:
             echo "APPI_APP_ID=$(out app_insights_app_id)"
             echo "APP=$(out container_app_name)"
             echo "ENV_DOMAIN=$(out environment_default_domain)"
+            echo "KV_NAME=$(out key_vault_name)"
           } >> "$GITHUB_ENV"
 
       - name: Azure CLI setup
         run: |
           az extension add -n ml -y --upgrade   # containerapp and rest are core commands
           az configure --defaults group="$RG" workspace="$AML_WS"
+
+      - name: Ops token (lets synthetic traffic past the API rate limit)
+        run: |
+          tok=""
+          if [ -n "${KV_NAME:-}" ]; then
+            tok=$(az keyvault secret show --vault-name "$KV_NAME" -n ops-bypass-token --query value -o tsv 2>/dev/null || true)
+          fi
+          if [ -n "$tok" ]; then
+            echo "::add-mask::$tok"
+            echo "OPS_BYPASS_TOKEN=$tok" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no ops token in Key Vault yet; synthetic traffic is subject to the rate limit"
+          fi
 
       - name: Download model from the Azure ML registry
         env:

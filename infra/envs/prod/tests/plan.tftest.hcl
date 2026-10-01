@@ -89,6 +89,11 @@ mock_provider "random" {
       result = "a1b2"
     }
   }
+  mock_resource "random_password" {
+    defaults = {
+      result = "mock-ops-token-0000000000000000000000000"
+    }
+  }
 }
 mock_provider "time" {}
 

@@ -18,11 +18,9 @@ env:
 jobs:
   python:
     name: lint, types, tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # SonarCloud needs history for new-code detection
 
       - uses: actions/setup-python@v7
         with:
@@ -53,17 +51,9 @@ jobs:
             coverage.xml
             junit.xml
 
-      # Enabled once the repo is public and linked to SonarCloud:
-      #   gh variable set SONAR_ENABLED --body true ; gh secret set SONAR_TOKEN
-      - name: SonarCloud scan
-        if: vars.SONAR_ENABLED == 'true'
-        uses: SonarSource/sonarqube-scan-action@v8.2.2
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
   terraform:
     name: terraform fmt, validate, test, checkov
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -95,7 +85,7 @@ jobs:
 
   image:
     name: image build, smoke test, trivy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -146,7 +136,7 @@ jobs:
     needs: terraform
     # Runs once Azure OIDC is configured (milestone 3); skipped for forks.
     if: vars.AZURE_CLIENT_ID != '' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write

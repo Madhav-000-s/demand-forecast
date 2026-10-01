@@ -95,10 +95,13 @@ that image) and the SLO alerts. The app URL is in the run summary.
 - **Drift alert:** emails when the drift job reports drift; see
   [runbooks/drift.md](runbooks/drift.md).
 
-The first model trained before milestone 5 has a drift reference over the
-training years, not the forecast window, and logs features in a format the
-drift job does not read. Retrain once after merging milestone 5
-(`gh workflow run train.yml -f reason="forecast-window drift reference"`).
+**Rate limit.** The API allows 10 requests/s per client IP (bursts of 50, per
+replica; `rate_limit_rps` / `rate_limit_burst` in the container_app module).
+Terraform generates an ops bypass token into Key Vault (`ops-bypass-token`);
+the deploy and drill workflows read it and send it as `X-Ops-Token`, so canary
+analysis, smoke tests and k6 are not throttled. Template changes create a
+revision at 0% traffic, so run `gh workflow run deploy.yml` after an infra
+change to the app.
 
 ## Local Terraform (optional)
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -32,6 +33,8 @@ def call(base: str, method: str, path: str, body: Any = None, timeout: float = 3
     req = urllib.request.Request(base.rstrip("/") + path, data=data, method=method)
     req.add_header("content-type", "application/json")
     req.add_header("x-traffic-source", "smoke")  # excluded from drift statistics
+    if os.environ.get("OPS_BYPASS_TOKEN"):  # past the per-client rate limit
+        req.add_header("x-ops-token", os.environ["OPS_BYPASS_TOKEN"])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read() or b"null"), dict(r.headers)

@@ -25,6 +25,9 @@ _meter = metrics.get_meter("dfcast.api")
 FORECASTS = _meter.create_counter(
     "dfcast_forecasts", unit="1", description="Forecasts served, by model version and horizon bucket"
 )
+RATE_LIMITED = _meter.create_counter(
+    "dfcast_rate_limited", unit="1", description="Requests rejected with 429 by the per-client rate limit"
+)
 PREDICTED_UNITS = _meter.create_histogram(
     "dfcast_predicted_units",
     unit="units",

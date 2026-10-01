@@ -17,6 +17,22 @@ variable "acr_id" { type = string }
 variable "acr_login_server" { type = string }
 variable "key_vault_id" { type = string }
 
+variable "ops_token_secret_id" {
+  type        = string
+  description = "Versionless Key Vault secret id of the token that bypasses the API rate limit."
+}
+
+variable "rate_limit_rps" {
+  type        = number
+  default     = 10
+  description = "Per-client sustained requests/second on /v1 (per replica). 0 disables."
+}
+
+variable "rate_limit_burst" {
+  type    = number
+  default = 50
+}
+
 variable "appinsights_secret_id" {
   type        = string
   description = "Versionless Key Vault secret id holding the App Insights connection string."

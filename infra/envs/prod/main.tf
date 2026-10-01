@@ -13,6 +13,13 @@ resource "random_string" "suffix" {
   special = false
 }
 
+# Lets our own deploy and drill traffic past the API's per-client rate limit
+# (sent as X-Ops-Token; workflows read it from Key Vault).
+resource "random_password" "ops_bypass_token" {
+  length  = 40
+  special = false
+}
+
 locals {
   base   = "${var.project}-${var.env}-${var.location_short}" # dfcast-prod-cin
   flat   = "${var.project}${var.env}${var.location_short}"   # dfcastprodcin
@@ -59,6 +66,7 @@ module "keyvault" {
   deployer_principal_id = data.azurerm_client_config.current.object_id
   secrets = {
     "appinsights-connection-string" = module.observability.app_insights_connection_string
+    "ops-bypass-token"              = random_password.ops_bypass_token.result
   }
   tags = local.tags
 }
@@ -79,6 +87,7 @@ module "container_app" {
   acr_login_server          = module.registry.login_server
   key_vault_id              = module.keyvault.id
   appinsights_secret_id     = module.keyvault.secret_ids["appinsights-connection-string"]
+  ops_token_secret_id       = module.keyvault.secret_ids["ops-bypass-token"]
   image                     = var.app_image
   min_replicas              = var.min_replicas
   # Sized from the load drill (2026-09-30, docs/postmortems): one 0.5 vCPU
