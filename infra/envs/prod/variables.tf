@@ -72,9 +72,12 @@ variable "enable_budget" {
   default = true
 }
 
+# Azure budgets are in the subscription's billing currency (INR here), not USD.
+# 9600 INR ~= $100 at 96.3 INR/USD (2026-10-04); thresholds land near $25/$50/$75.
 variable "budget_amount" {
-  type    = number
-  default = 100
+  type        = number
+  default     = 9600
+  description = "Annual budget in the billing currency (INR), ~= $100."
 }
 
 variable "budget_start_date" {

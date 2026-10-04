@@ -60,7 +60,7 @@ variable "enable_budget" {
 variable "budget_amount" {
   type        = number
   default     = 100
-  description = "USD over the budget's annual period."
+  description = "Amount in the subscription's billing currency (not necessarily USD) over the budget's annual period."
 }
 
 variable "budget_thresholds_pct" {
