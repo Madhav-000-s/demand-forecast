@@ -201,8 +201,9 @@ resource "azurerm_monitor_metric_alert" "availability" {
 
 # --- Cost ---------------------------------------------------------------------
 
-# Annual budget over the credit: emails at $25 / $50 / $75 actual spend and when
-# the forecast crosses the full amount.
+# Annual budget over the credit: emails at 25 / 50 / 75 % of actual spend and
+# when the forecast crosses the full amount. The amount is in the billing
+# currency (INR for this subscription), so prod sets ~= $100 in rupees.
 resource "azurerm_consumption_budget_resource_group" "credit" {
   count = var.enable_budget ? 1 : 0
 
