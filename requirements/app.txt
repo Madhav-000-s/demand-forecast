@@ -1,7 +1,7 @@
 # Runtime dependencies of the API image
-fastapi==0.141.1
+fastapi==0.142.2
 uvicorn[standard]==0.54.0
 pydantic==2.13.5
 lightgbm==4.7.0
-numpy==2.2.6
+numpy==2.5.3
 azure-monitor-opentelemetry==1.8.10
