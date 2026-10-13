@@ -1,2 +1,2 @@
 # Drift job (scripts/drift_check.py): numpy only; keep in step with app.txt
-numpy==2.2.6
+numpy==2.5.3
