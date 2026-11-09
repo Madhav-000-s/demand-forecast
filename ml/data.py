@@ -26,7 +26,7 @@ class Panel:
 
     @property
     def end(self) -> date:
-        return (np.datetime64(self.start, "D") + self.n_days - 1).astype(date)
+        return (np.datetime64(self.start, "D") + np.timedelta64(self.n_days - 1, "D")).astype(date)
 
     def position(self, d: date) -> int:
         return int((np.datetime64(d, "D") - np.datetime64(self.start, "D")).astype(int))

@@ -19,8 +19,8 @@ def make_sales_frame(first: str = "2015-01-01", last: str = "2017-12-31", seed: 
     rng = np.random.default_rng(seed)
     dates = pd.date_range(first, last, freq="D")
     t = np.arange(len(dates))
-    weekly = 1 + 0.25 * np.sin(2 * np.pi * dates.dayofweek.to_numpy() / 7)
-    yearly = 1 + 0.3 * np.sin(2 * np.pi * dates.dayofyear.to_numpy() / 365.25)
+    weekly = 1 + 0.25 * np.sin(2 * np.pi * dates.day_of_week.to_numpy() / 7)
+    yearly = 1 + 0.3 * np.sin(2 * np.pi * dates.day_of_year.to_numpy() / 365.25)
     rows = []
     for store in SYNTH_STORES:
         for item in SYNTH_ITEMS:

@@ -71,13 +71,13 @@ def test_calendar_matches_pandas() -> None:
     iso = dates.isocalendar()
     expected = np.column_stack(
         [
-            dates.dayofweek,
+            dates.day_of_week,
             dates.day,
             dates.month,
             iso.week,
-            dates.dayofyear,
+            dates.day_of_year,
             dates.year,
-            (dates.dayofweek >= 5).astype(int),
+            (dates.day_of_week >= 5).astype(int),
         ]
     )
     np.testing.assert_array_equal(got, expected)
