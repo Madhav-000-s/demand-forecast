@@ -28,7 +28,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -244,7 +244,7 @@ def run(
 
     booster, metrics, _ = train(panel, splits, params, max_rounds=max_rounds)
     sha = git_sha()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     version = model_version or f"{now:%Y%m%d.%H%M}-{sha[:7]}"
 
     booster.save_model(str(out / "model.txt"))

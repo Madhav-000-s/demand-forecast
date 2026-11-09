@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -53,7 +53,7 @@ def event_envelope(
 ) -> dict[str, Any]:
     return {
         "name": "Microsoft.ApplicationInsights.Event",
-        "time": (time or datetime.now(timezone.utc)).isoformat(),
+        "time": (time or datetime.now(UTC)).isoformat(),
         "iKey": ikey,
         "tags": {"ai.cloud.role": role},
         "data": {
@@ -169,4 +169,4 @@ def replica_starts(app_id: str, start: datetime, end: datetime) -> list[dict]:
 
 
 def _iso(t: datetime) -> str:
-    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

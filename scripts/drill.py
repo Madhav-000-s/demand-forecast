@@ -32,7 +32,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +101,7 @@ class ClientStats:
         d.update(
             client_p50_ms=round(float(np.percentile(lat, 50)), 1),
             client_p95_ms=round(float(np.percentile(lat, 95)), 1),
-            client_max_ms=round(float(lat.max()), 1),
+            client_max_ms=round(float(np.max(lat)), 1),
         )
         return d
 
@@ -279,7 +279,7 @@ def report(app_id: str, start: datetime, end: datetime) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _run_url() -> str:
@@ -299,7 +299,7 @@ def _summary(text: str) -> None:
 
 def _parse_time(value: str) -> datetime:
     t = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = json.loads(a.client_stats.read_text()) if a.client_stats else None
     extra = dict(kv.split("=", 1) for kv in a.extra)
-    end = a.end or datetime.now(timezone.utc)
+    end = a.end or datetime.now(UTC)
     result = record(
         a.name,
         a.start,

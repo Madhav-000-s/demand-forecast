@@ -9,7 +9,7 @@ import shutil
 import sys
 import threading
 from collections.abc import Iterator
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
@@ -142,7 +142,7 @@ def test_unreachable_app_counts_as_failed(drill: ModuleType) -> None:
 def test_record_without_azure(drill: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    start = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 1, 10, 0, tzinfo=UTC)
     result = drill.record(
         "restart", start, start + timedelta(minutes=5), None, {"sent": 10, "failed": 0},
         "no user-visible errors", "0 errors", True, {"revision": "r1"},
@@ -161,7 +161,7 @@ def test_record_sends_event_with_measurements(drill: ModuleType, monkeypatch: py
         "window_stats",
         lambda *_a, **_k: {"requests": 50, "errors": 1, "p95": 420.0, "replicas": 2, "revisions": ["a"]},
     )
-    start = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 1, 10, 0, tzinfo=UTC)
     drill.record("slow-release", start, start + timedelta(minutes=1), "app", None, "e", "o", False)
     name, props, meas = sent[0]
     assert name == "drill" and props["passed"] == "false"
@@ -186,7 +186,7 @@ def test_window_stats_query_and_parsing(ai: ModuleType, monkeypatch: pytest.Monk
         return [[120, 3, 11.2, 240.55, 410.0, 900.0, 2, '["rev-a","rev-b"]']]
 
     monkeypatch.setattr(ai, "query", fake)
-    start = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 1, 10, 0, tzinfo=UTC)
     stats = ai.window_stats("app", start, start + timedelta(minutes=5), sources=["drill", "bad' or 1==1"])
     assert stats == {
         "requests": 120, "errors": 3, "p50": 11.2, "p95": 240.6, "p99": 410.0,
@@ -243,7 +243,7 @@ def test_report_renders_timeline_and_replica_starts(
             {"timestamp": "2026-09-30T17:10:58Z", "replica": "r-1", "revision": "rev", "load_seconds": 3.2}
         ],
     )
-    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=UTC)
     text = drill.report("app", start, start + timedelta(minutes=10))
     assert "| 17:11 | 900 | 0 | 480.2 | 1348.0 | 1 |" in text
     assert "| 17:10:58 | r-1 | 3.2 |" in text
@@ -251,7 +251,7 @@ def test_report_renders_timeline_and_replica_starts(
 
 def test_timeline_parsing(ai: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ai, "query", lambda *_a: [["2026-09-30T17:11:00Z", 900, 2, 480.24, 1348.04, 2]])
-    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=UTC)
     rows = ai.timeline("app", start, start + timedelta(minutes=10))
     assert rows == [
         {
@@ -273,7 +273,7 @@ def test_record_uses_the_requested_sources(drill: ModuleType, monkeypatch: pytes
         return {"requests": 1, "errors": 0, "replicas": 1}
 
     monkeypatch.setattr(drill.appinsights, "window_stats", fake)
-    start = datetime(2026, 9, 30, 17, 9, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 30, 17, 9, tzinfo=UTC)
     drill.record("load", start, start, "app", None, "e", "o", True, sources=["load"])
     assert seen == [["load"], None]
 
